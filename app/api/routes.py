@@ -22,6 +22,25 @@ ui = APIRouter(dependencies=[Depends(require_user)])
 work = APIRouter(dependencies=[Depends(require_worker)])
 
 
+def public_base(request: Request) -> str:
+    """The URL a client outside Azure should use.
+
+    App Service terminates TLS and forwards plain http to the container, so
+    request.base_url says "http://…". Anything we hand out — the worker's
+    DEALDESK_URL, the endpoints baked into the ChatGPT prompts — has to be the
+    https one, or the worker ends up sending its bearer token in the clear.
+    """
+    base = str(request.base_url).rstrip("/")
+    proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+    if proto:
+        base = base.replace("http://", f"{proto}://", 1)
+    host = request.headers.get("x-forwarded-host", "").split(",")[0].strip()
+    if host:
+        scheme = base.split("://", 1)[0]
+        base = f"{scheme}://{host}"
+    return base
+
+
 def record_task(task: str, source: str, status: str, summary: str,
                 items: int = 0, errors: list | None = None, **detail) -> int:
     """Every call from a ChatGPT scheduled task lands here so the Tasks page can
@@ -652,7 +671,7 @@ def open_tracking():
 @ui.get("/prompts")
 def list_prompts(request: Request):
     from pathlib import Path
-    base = str(request.base_url).rstrip("/")
+    base = public_base(request)
     out = []
     for f in sorted((config.ROOT / "prompts").glob("*.md")):
         text = f.read_text()
@@ -920,7 +939,7 @@ def worker_status():
 def setup_link(request: Request):
     """A one-line install command, valid for 30 minutes."""
     from ..security import make_setup_token
-    base = str(request.base_url).rstrip("/")
+    base = public_base(request)
     token = make_setup_token(30)
     return {"command": f'curl -fsSL "{base}/api/worker/install.sh?t={token}" | bash',
             "expires_in_minutes": 30, "base": base}
@@ -935,7 +954,7 @@ def worker_install_script(request: Request, t: str = ""):
     if not (valid_setup_token(t) or read_session_ok(request)):
         raise HTTPException(401, "this setup link has expired — generate a new one "
                                  "from the dashboard's Setup page")
-    base = str(request.base_url).rstrip("/")
+    base = public_base(request)
     script = (config.ROOT / "worker" / "install_mac.sh").read_text()
     header = "\n".join([
         "#!/usr/bin/env bash",

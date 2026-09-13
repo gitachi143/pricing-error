@@ -155,3 +155,36 @@ def test_a_deal_with_a_placed_order_cannot_be_removed(client):
     r = client.delete(f"/api/deals/{did}")
     assert r.status_code == 400 and "placed order" in r.json()["detail"]
     assert db.q1("SELECT id FROM deals WHERE id=?", (did,)) is not None
+
+
+# --- https behind Azure's TLS-terminating proxy ----------------------------
+FWD = {"x-forwarded-proto": "https", "x-forwarded-host": "dealdesk.azurewebsites.net"}
+
+
+def test_install_link_uses_https_behind_the_proxy(client):
+    r = client.post("/api/setup/link", headers=FWD).json()
+    assert r["base"] == "https://dealdesk.azurewebsites.net"
+    assert r["command"].startswith('curl -fsSL "https://dealdesk.azurewebsites.net/')
+
+
+def test_worker_config_never_points_at_plain_http(client):
+    import re
+    cmd = client.post("/api/setup/link", headers=FWD).json()["command"]
+    token = re.search(r"install\.sh\?t=([\w.\-]+)", cmd).group(1)
+    body = TestClient(app).get(f"/api/worker/install.sh?t={token}", headers=FWD).text
+    url = re.search(r"export DEALDESK_URL='([^']+)'", body).group(1)
+    bundle = re.search(r"export WORKER_BUNDLE_URL='([^']+)'", body).group(1)
+    assert url.startswith("https://"), "the worker would send its bearer token in the clear"
+    assert bundle.startswith("https://")
+
+
+def test_chatgpt_prompts_are_given_the_https_endpoint(client):
+    for p in client.get("/api/prompts", headers=FWD).json():
+        assert "http://dealdesk" not in p["text"], f"{p['file']} points at plain http"
+        if "/api/ingest" in p["text"]:
+            assert "https://dealdesk.azurewebsites.net/api/ingest" in p["text"]
+
+
+def test_local_http_still_works(client):
+    """No forwarding headers (local dev) must not be rewritten to https."""
+    assert client.post("/api/setup/link").json()["base"].startswith("http://")
