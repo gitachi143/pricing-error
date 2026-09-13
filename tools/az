@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Azure CLI wrapper.
+# The project folder name contains a space, which breaks the venv's shebang line,
+# so we invoke the module directly instead of the generated `az` script.
+exec "$(dirname "$0")/../.azure-venv/bin/python" -m azure.cli "$@"

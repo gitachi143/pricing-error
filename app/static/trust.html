@@ -1,0 +1,57 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deal Desk — Link trust</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/styles.css"></head><body>
+<main>
+  <header class="page"><div><h1>Link trust</h1>
+    <div class="sub">Exact-domain matching plus lookalike detection: Greek/Cyrillic characters that
+      render like Latin, punycode, typosquats, and brand names hidden in subdomains.</div></div></header>
+  <div class="split" style="grid-template-columns:1fr 1fr">
+    <section class="card">
+      <h2>Test a link</h2>
+      <div class="field"><textarea id="url" placeholder="https://www.tаrget.com/p/deal   ← that 'а' is Cyrillic"></textarea></div>
+      <button class="primary" id="go">Check it</button>
+      <div id="out" style="margin-top:14px"></div>
+    </section>
+    <section class="card">
+      <h2>Trusted merchants</h2>
+      <div class="hint" style="margin-bottom:9px">Only these domains can be bought from on an exact match.
+        Return policy here feeds the buying filters.</div>
+      <div class="row" style="margin-bottom:10px">
+        <input id="nd" placeholder="domain.com"><input id="nr" type="number" placeholder="return days" value="30">
+        <button id="add">Add</button></div>
+      <div class="t-wrap" style="max-height:56vh"><table><thead><tr><th>Domain</th><th class="num">Returns</th>
+        <th>Cancel risk</th><th>Checkout</th><th></th></tr></thead><tbody id="ms"></tbody></table></div>
+    </section>
+  </div>
+</main>
+<script src="/app.js"></script>
+<script>
+shell('/trust');
+$('#go').onclick = async () => {
+  const res = await api('/trust-check', { method: 'POST', body: { url: $('#url').value } });
+  $('#out').innerHTML = res.map(r => `<div class="card" style="margin-bottom:10px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+      ${chip(r.verdict)}<span class="mono" style="color:var(--ink-2)">score ${r.score}</span></div>
+    <div class="kv" style="margin:10px 0"><dt>Shown as</dt><dd class="mono">${host(r.unicode_host)}</dd>
+      <dt>Real domain</dt><dd class="mono"><b>${host(r.registrable)}</b></dd>\n      <dt>On the wire</dt><dd class="mono">${esc(r.ascii_host || r.host)}</dd>
+      ${r.impersonates ? `<dt>Impersonates</dt><dd class="mono" style="color:var(--critical)">${esc(r.impersonates)}</dd>` : ''}</div>
+    <ul class="reasons">${r.reasons.map(x => `<li class="${r.verdict === 'TRUSTED' ? 'pass' : 'fail'}">${esc(x)}</li>`).join('')}</ul>
+  </div>`).join('') || '<div class="hint">No links found.</div>';
+};
+async function loadM() {
+  const ms = await api('/merchants');
+  $('#ms').innerHTML = ms.map(m => `<tr><td><b>${esc(m.domain)}</b><div class="hint">${esc(m.name || '')}</div></td>
+    <td class="num">${m.return_window_days || 0}d${m.free_returns ? '' : ' <span class="hint">paid</span>'}</td>
+    <td>${chip(m.cancel_risk || 'medium', m.cancel_risk === 'high' ? 'err' : m.cancel_risk === 'low' ? 'ok' : 'warn')}</td>
+    <td>${esc(m.checkout_difficulty || '—')}</td>
+    <td><button class="sm danger" data-d="${esc(m.domain)}">remove</button></td></tr>`).join('');
+  $$('#ms button').forEach(b => b.onclick = async () => {
+    await api('/merchants/' + b.dataset.d, { method: 'DELETE' }); loadM();
+  });
+}
+$('#add').onclick = async () => {
+  await api('/merchants/trust', { method: 'POST', body: { domain: $('#nd').value.trim().toLowerCase(), return_window_days: +$('#nr').value || 30 } });
+  $('#nd').value = ''; toast('Added'); loadM();
+};
+loadM();
+</script></body></html>

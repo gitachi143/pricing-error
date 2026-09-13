@@ -1,0 +1,18 @@
+{
+  "address": {
+    "line1": "123 Example St", "line2": "Apt 4", "city": "Boston",
+    "state": "MA", "zip": "02115", "country": "US"
+  },
+  "accounts": {
+    "default":     {"email": "you@example.com", "password": "…", "phone": "6175550123",
+                    "first_name": "Your", "last_name": "Name"},
+    "bestbuy.com": {"email": "you@example.com", "password": "different-password-here"}
+  },
+  "cards": {
+    "1": {"number": "4111111111111111", "name": "Your Name", "month": "04", "year": "2029",
+          "cvv": "123", "zip": "02115"},
+    "2": {"number": "5555555555554444", "name": "Your Name", "month": "11", "year": "2028",
+          "cvv": "456", "zip": "02115"}
+  },
+  "default_shipping": "Standard"
+}

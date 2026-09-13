@@ -1,0 +1,141 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deal Desk — Test bench</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/styles.css"></head><body>
+<main>
+  <header class="page">
+    <div><h1>Test bench</h1><div class="sub">Drop a link or a whole Discord message in and watch
+      every stage run. Nothing gets added to a cart and no card is touched.</div></div>
+    <button class="ghost" id="clear">Clear test history</button>
+  </header>
+
+  <section class="card" style="margin-bottom:12px">
+    <div class="field">
+      <textarea id="msg" style="min-height:76px"
+        placeholder="🔥 PRICE ERROR https://www.target.com/p/… $39 (was $399) — or just paste a bare link"></textarea>
+    </div>
+    <div class="row" style="align-items:center">
+      <button class="primary" id="run" style="flex:0 0 auto">Run it</button>
+      <label class="switch" style="flex:0 0 auto" title="Leave on. Off will actually queue a checkout.">
+        <input type="checkbox" id="dry" checked><span>Dry run</span></label>
+      <div class="hint" style="flex:1" id="hint">With dry run on, the checkout track is simulated
+        rather than queued.</div>
+    </div>
+    <div class="row" style="margin-top:10px;gap:6px">
+      <span class="hint" style="flex:0 0 auto;align-self:center">try:</span>
+      <button class="sm" data-ex="🚨 PRICE ERROR https://www.target.com/p/sony-wh-1000xm5-headphones/-/A-86718543 $39 was $399!!">a normal deal</button>
+      <button class="sm" data-ex="deal!! https://www.tаrget.com/p/sony-wh-1000xm5 $29">a spoofed domain</button>
+      <button class="sm" data-ex="check [this](<https://www.bestbuy.com/site/lg-c3-65-oled/6534489.p?skuId=6534489>) and walmart.com/ip/Dyson-V15/1234567">two links, messy formatting</button>
+      <button class="sm" data-ex="https://bit.ly/3xYzAbc">a shortener</button>
+    </div>
+  </section>
+
+  <div id="out"></div>
+</main>
+<script src="/app.js"></script>
+<script>
+shell('/testbench');
+
+const stageIcon = { intake: '◦', trust: '⛊', product: '▤', research: '⚗', decision: '◈',
+                    payment: '▦', shipping: '⇢', checkout: '⟳', order: '✓' };
+
+$$('[data-ex]').forEach(b => b.onclick = () => { $('#msg').value = b.dataset.ex; $('#run').click(); });
+$('#dry').onchange = e => $('#hint').innerHTML = e.target.checked
+  ? 'With dry run on, the checkout track is simulated rather than queued.'
+  : '<b style="color:var(--critical)">Dry run is OFF — this will prepare a real cart.</b>';
+
+$('#clear').onclick = async () => {
+  const r = await api('/testbench', { method: 'DELETE' });
+  toast(`Removed ${r.removed} test deal(s)`); $('#out').innerHTML = '';
+};
+
+$('#run').onclick = async () => {
+  const btn = $('#run'); btn.disabled = true; btn.textContent = 'Running…';
+  $('#out').innerHTML = '<div class="card"><div class="empty">Running the pipeline…</div></div>';
+  try {
+    const r = await api('/testbench', { method: 'POST',
+      body: { message: $('#msg').value, dry_run: $('#dry').checked } });
+    $('#out').innerHTML = r.results.length
+      ? `<div class="hint" style="margin-bottom:9px">${r.results.length} link(s) · whole pipeline in
+         <b>${r.elapsed_ms} ms</b>${r.dry_run ? ' · dry run' : ''}</div>`
+        + r.results.map(card).join('')
+      : '<div class="card"><div class="empty">No links found in that message.</div></div>';
+  } catch (e) {
+    $('#out').innerHTML = `<div class="card"><div class="empty" style="color:var(--critical)">${esc(e.message)}</div></div>`;
+  }
+  btn.disabled = false; btn.textContent = 'Run it';
+};
+
+function card(res) {
+  const d = res.deal, r = d.decision_reasons || {}, p = d.raw_product || {};
+  const ship = res.shipping || {}, plan = res.card_plan;
+  return `<section class="card" style="margin-bottom:12px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+      <div><h2 style="margin-bottom:2px">${esc(d.product_name || '(no name)')}</h2>
+        <div class="hint">${host(d.merchant)} · ${esc(d.category || '—')}${d.size ? ' · size ' + esc(d.size) : ''}
+          · decided in ${d.latency_ms ?? '—'} ms · <a href="/deal?id=${d.id}">full detail →</a></div></div>
+      <div style="text-align:right">${chip(d.decision)} ${chip(d.trust_verdict)}
+        <div class="hint" style="margin-top:3px">score <b>${d.score ?? '—'}</b></div></div>
+    </div>
+
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));margin-top:12px">
+      ${mini('Price', money(d.listed_price))}
+      ${mini('Market', money(d.market_price), d.market_price_source || '')}
+      ${mini('Discount', pct(d.discount_pct))}
+      ${mini('Profit / unit', money(d.est_profit_unit))}
+      ${mini('Qty', d.target_qty ?? 0)}
+      ${mini('Stock', esc(p.availability || 'unknown'))}
+    </div>
+
+    <div class="split" style="grid-template-columns:1fr 1fr;margin-top:14px;gap:16px">
+      <div>
+        <h3>Checks</h3>
+        <ul class="reasons">
+          ${(r.passed || []).map(x => `<li class="pass">${esc(x)}</li>`).join('')}
+          ${(r.failed || []).map(x => `<li class="fail">${esc(x)}</li>`).join('')}
+          ${(r.notes || []).map(x => `<li class="note">${esc(x)}</li>`).join('')}
+        </ul>
+        <h3 style="margin-top:12px">Link trust</h3>
+        <ul class="reasons">${(d.trust_reasons || []).map(x =>
+          `<li class="${d.trust_verdict === 'TRUSTED' ? 'pass' : 'fail'}">${esc(x)}</li>`).join('')}</ul>
+      </div>
+      <div>
+        <h3>Shipping it would pick</h3>
+        ${ship.selector || ship.label
+          ? `<div style="padding:7px 0"><b>${esc(ship.label || '—')}</b>
+             ${ship.cost ? `<span class="chip warn" style="margin-left:6px"><span class="g"></span>${money(ship.cost)}</span>`
+                         : '<span class="chip ok" style="margin-left:6px"><span class="g"></span>free</span>'}
+             ${ship.fallback ? '<span class="chip mute" style="margin-left:4px"><span class="g"></span>fallback</span>' : ''}
+             <div class="hint">${esc(ship.reason || '')}</div></div>`
+          : `<div class="hint">${esc(ship.reason || 'no shipping options recorded')}</div>`}
+        <div class="hint"><a href="/merchants?m=${encodeURIComponent(d.merchant || '')}">change this merchant's shipping rules →</a></div>
+
+        <h3 style="margin-top:12px">Cards it would use</h3>
+        ${plan && plan.charges && plan.charges.length
+          ? plan.charges.map(c => `<div style="padding:4px 0"><b>${esc(c.card_label)}</b> — ${c.qty} unit(s), ${money(c.amount)}
+              <div class="hint">${esc(c.reason)}</div></div>`).join('')
+            + (plan.shortfall_reason ? `<div class="hint" style="color:var(--warning)">${esc(plan.shortfall_reason)}</div>` : '')
+          : '<div class="hint">No card plan — nothing to buy, or no card with room.</div>'}
+
+        <h3 style="margin-top:12px">Checkout readiness</h3>
+        ${res.playbook
+          ? `<div class="hint">playbook <span class="mono">${esc(res.playbook.version)}</span>
+             (confidence ${res.playbook.confidence})
+             ${res.playbook.shipping_options.length ? '· options: ' + res.playbook.shipping_options.map(esc).join(', ') : '· no shipping options recorded'}</div>`
+          : '<div class="hint" style="color:var(--critical)">No live playbook — the bot could research this but not check out.</div>'}
+        ${res.session ? `<div class="hint">session: ${res.session.signed_in ? 'signed in' : 'signed out'}
+          ${res.session.needs_manual_login ? '— <b style="color:var(--critical)">needs a manual sign-in</b>' : ''}</div>` : ''}
+      </div>
+    </div>
+
+    <details style="margin-top:12px"><summary class="hint" style="cursor:pointer">timeline</summary>
+      <div class="log" style="margin-top:6px;max-height:300px;overflow:auto">
+        ${(d.events || []).slice().reverse().map(e => `<div class="ln ${e.level}">
+          <span class="ts">${clock(e.ts)}</span><span class="stage">${stageIcon[e.stage] || ''} ${esc(e.stage || '')}</span>
+          <span class="msg">${esc(e.message)}</span></div>`).join('')}
+      </div></details>
+  </section>`;
+}
+const mini = (label, value, foot = '') =>
+  `<div class="card tile sm" style="padding:10px 12px"><div class="label">${label}</div>
+   <div class="value">${value}</div>${foot ? `<div class="foot">${esc(foot)}</div>` : ''}</div>`;
+</script></body></html>

@@ -1,0 +1,12 @@
+.env
+data/*.db
+data/*.db-wal
+data/*.db-shm
+worker/vault.json
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+.pytest_cache/
+.azure-venv/
+*.png

@@ -1,0 +1,77 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deal Desk — Settings</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/styles.css"></head><body>
+<main>
+  <header class="page"><div><h1>Settings</h1>
+    <div class="sub">Kill switches, spend caps, and the copy-paste setup for the two ChatGPT scheduled
+      tasks that keep this thing current.</div></div></header>
+
+  <div class="split">
+    <div class="stack">
+      <section class="card"><h2>Safety</h2>
+        <div class="row" style="align-items:center">
+          <label class="switch" style="flex:0 0 auto"><input type="checkbox" id="autoBuy"><span>Auto-buy</span></label>
+          <div class="hint" style="flex:1">Off: carts get prepared and parked, you press Buy.
+            On: the worker pays without asking.</div></div>
+        <div class="row" style="margin-top:12px">
+          <div><label>Daily spend cap</label><input id="cap" type="number"></div>
+          <div style="flex:0 0 auto;align-self:flex-end"><button id="saveCap">Save</button></div></div>
+      </section>
+
+      <section class="card"><h2>ChatGPT scheduled tasks</h2>
+        <div class="hint" style="margin-bottom:10px">Create each of these as a scheduled task in ChatGPT.
+          The token and URL below are already filled in — copy the whole block into the task.</div>
+        <div id="prompts"></div>
+      </section>
+
+      <section class="card"><h2>Feeding it from Discord</h2>
+        <div class="hint">Your Discord listener only has to do one thing: POST the message text here.</div>
+        <pre class="mono" id="curl" style="background:var(--plane);padding:12px;border-radius:8px;overflow:auto;font-size:11.5px"></pre>
+      </section>
+    </div>
+
+    <div class="stack">
+      <section class="card"><h2>Checkout worker</h2><div id="worker"></div>
+        <div class="hint" style="margin-top:8px">Runs on your machine (it holds the card details and the
+          browser). Start it with <code>python3 worker/run_worker.py</code>.</div></section>
+      <section class="card"><h2>Tokens</h2><div id="tokens"></div></section>
+      <section class="card"><h2>Queue</h2><div id="queue"></div></section>
+    </div>
+  </div>
+</main>
+<script src="/app.js"></script>
+<script>
+shell('/settings');
+async function load() {
+  const [s, w, prompts] = await Promise.all([api('/stats'), api('/worker/status'), api('/prompts')]);
+  $('#autoBuy').checked = s.auto_buy; $('#cap').value = s.daily_cap;
+  $('#worker').innerHTML = `<div>${chip(w.online ? 'online' : 'offline', w.online ? 'ok' : 'err')}
+    <span class="hint">${w.heartbeat ? `${esc(w.heartbeat.worker_id)} · ${ago(w.heartbeat.ts)}` : 'never connected'}</span></div>`;
+  $('#queue').innerHTML = (w.queue || []).map(q => `<div style="display:flex;justify-content:space-between;padding:3px 0">
+    <span>${esc(q.kind)} · ${esc(q.state)}</span><b>${q.n}</b></div>`).join('') || '<div class="hint">Queue is empty.</div>';
+  $('#prompts').innerHTML = prompts.map((p, i) => `
+    <div style="border:1px solid var(--grid);border-radius:9px;margin-bottom:9px">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:9px 12px">
+        <b>${esc(p.title)}</b><button class="sm" data-c="${i}">Copy</button></div>
+      <details><summary class="hint" style="padding:0 12px 9px;cursor:pointer">show the prompt</summary>
+        <pre class="mono" style="margin:0;padding:12px;background:var(--plane);white-space:pre-wrap;font-size:11px;max-height:320px;overflow:auto">${esc(p.text)}</pre></details></div>`).join('');
+  $$('#prompts button[data-c]').forEach(b => b.onclick = () => {
+    navigator.clipboard.writeText(prompts[b.dataset.c].text); toast('Prompt copied');
+  });
+  const settings = await api('/settings');
+  $('#tokens').innerHTML = `<div class="hint">Set as environment variables on the server. Shown so you can
+    paste them into ChatGPT and the worker.</div>
+    <div class="field" style="margin-top:8px"><label>Ingest token (ChatGPT + Discord)</label>
+      <input readonly value="${esc(prompts.length ? (prompts[0].text.match(/Bearer (\\S+)/) || [, ''])[1] : '')}"></div>`;
+  $('#curl').textContent = `curl -X POST ${location.origin}/api/ingest/message \\
+  -H "Authorization: Bearer <INGEST_TOKEN>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"message": "<the raw discord message>", "source": "discord:#pricing-errors"}'
+
+# response comes back with the decision already made:
+# {"handled":1,"elapsed_ms":412,"deals":[{"id":7,"decision":"BUY","qty":3,"score":91.2}]}`;
+}
+$('#autoBuy').onchange = async e => { await api('/settings', { method: 'PUT', body: { auto_buy: e.target.checked } }); toast('Saved'); };
+$('#saveCap').onclick = async () => { await api('/settings', { method: 'PUT', body: { daily_spend_cap: +$('#cap').value } }); toast('Saved'); };
+load(); poll(load, 20000);
+</script></body></html>

@@ -1,0 +1,143 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deal Desk — Cards & limits</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/styles.css"></head><body>
+<main>
+  <header class="page"><div><h1>Cards &amp; limits</h1>
+    <div class="sub">Card numbers never touch this server — only nickname, last 4, and how much credit is left.
+      The worker on your machine holds the actual card.</div></div>
+    <button class="primary" id="addBtn">Add card</button></header>
+
+  <section class="card" style="margin-bottom:12px">
+    <h2>Your cards</h2>
+    <div class="t-wrap" style="max-height:none"><table>
+      <thead><tr><th>Card</th><th class="num">Limit</th><th class="num">Available</th><th>Used</th>
+        <th class="num">Order</th><th class="num">Max / order</th><th class="num">Daily cap</th>
+        <th class="num">Resets</th><th>On</th><th></th></tr></thead>
+      <tbody id="cards"></tbody></table></div>
+    <div class="hint" style="margin-top:8px">“Available” is what the bot believes is left. It drops after each
+      order and resets to the full limit on the statement day you set.</div>
+  </section>
+
+  <div class="split">
+    <section class="card">
+      <h2>Per-site rules</h2>
+      <div class="hint" style="margin-bottom:10px">Which card to try first at which merchant. Cards not listed
+        here are still used as fallbacks, in the global order above. Use <code>*</code> for “every site”.</div>
+      <div class="row" style="margin-bottom:10px">
+        <input id="rm" placeholder="bestbuy.com or *" style="flex:1 1 130px">
+        <select id="rc" style="flex:1 1 140px"></select>
+        <input id="rr" type="number" value="0" title="try order" style="flex:0 0 70px">
+        <input id="rs" placeholder="shipping method" style="flex:1 1 130px">
+        <button id="addRule" style="flex:0 0 auto">Add</button></div>
+      <div class="t-wrap" style="max-height:44vh"><table><thead><tr><th>Merchant</th><th class="num">#</th>
+        <th>Card</th><th>Shipping</th><th></th></tr></thead><tbody id="rules"></tbody></table></div>
+    </section>
+
+    <section class="card">
+      <h2>What would happen?</h2>
+      <div class="hint" style="margin-bottom:10px">Dry-run the allocator: it fills each card as far as it goes,
+        then rolls the rest onto the next one.</div>
+      <div class="row">
+        <div><label>Merchant</label><input id="sm" value="bestbuy.com"></div>
+        <div><label>Unit price</label><input id="sp" type="number" value="199.99" step="0.01"></div>
+        <div><label>Qty</label><input id="sq" type="number" value="6"></div>
+      </div>
+      <button class="primary" id="sim" style="margin-top:10px">Simulate</button>
+      <div id="simOut" style="margin-top:12px"></div>
+    </section>
+  </div>
+</main>
+
+<dialog id="dlg"><h2>Add a card</h2>
+  <div class="row"><div><label>Nickname</label><input id="f_nick" placeholder="Chase Sapphire"></div>
+    <div><label>Network</label><select id="f_net"><option>visa</option><option>mastercard</option>
+      <option>amex</option><option>discover</option></select></div>
+    <div><label>Last 4</label><input id="f_l4" maxlength="4" placeholder="4421"></div></div>
+  <div class="row"><div><label>Credit limit</label><input id="f_lim" type="number" value="5000"></div>
+    <div><label>Available now</label><input id="f_av" type="number" placeholder="same as limit"></div>
+    <div><label>Try order</label><input id="f_pri" type="number" value="100"></div></div>
+  <div class="row"><div><label>Max per order</label><input id="f_mx" type="number" value="0" placeholder="0 = none"></div>
+    <div><label>Daily cap</label><input id="f_dc" type="number" value="0" placeholder="0 = none"></div>
+    <div><label>Statement day</label><input id="f_sd" type="number" min="1" max="28" placeholder="e.g. 14"></div></div>
+  <div class="row" style="margin-top:12px"><button class="primary" id="save">Save</button>
+    <button class="ghost" id="cancel">Cancel</button></div></dialog>
+
+<script src="/app.js"></script>
+<script>
+shell('/cards');
+let cards = [];
+
+async function load() {
+  cards = await api('/cards');
+  $('#cards').innerHTML = cards.map(c => {
+    const used = c.credit_limit ? 100 * (1 - c.available / c.credit_limit) : 0;
+    return `<tr data-id="${c.id}">
+      <td><b>${esc(c.nickname)}</b> <span class="hint">${esc(c.network)} ·${esc(c.last4 || '????')}</span>
+        ${c.cooldown_until > Date.now() / 1000 ? chip('cooling down', 'warn') : ''}</td>
+      <td class="num"><input class="e" data-f="credit_limit" value="${c.credit_limit}" style="width:88px;text-align:right"></td>
+      <td class="num"><input class="e" data-f="available" value="${c.available}" style="width:88px;text-align:right"></td>
+      <td style="min-width:120px"><div class="meter" style="margin:0"><i style="width:${Math.min(100, used)}%;background:${used > 90 ? 'var(--critical)' : used > 70 ? 'var(--warning)' : 'var(--s1)'}"></i></div>
+        <div class="hint">${used.toFixed(0)}% used · ${money(c.spent_today)} today</div></td>
+      <td class="num"><input class="e" data-f="priority" value="${c.priority}" style="width:56px;text-align:right"></td>
+      <td class="num"><input class="e" data-f="max_per_txn" value="${c.max_per_txn}" style="width:76px;text-align:right"></td>
+      <td class="num"><input class="e" data-f="daily_cap" value="${c.daily_cap}" style="width:76px;text-align:right"></td>
+      <td class="num"><input class="e" data-f="statement_day" value="${c.statement_day ?? ''}" style="width:52px;text-align:right"></td>
+      <td><label class="switch"><input type="checkbox" class="e" data-f="enabled" ${c.enabled ? 'checked' : ''}></label></td>
+      <td><button class="sm danger" data-del="${c.id}">×</button></td></tr>`;
+  }).join('') || `<tr><td colspan="10" class="empty">No cards yet — add one to start.</td></tr>`;
+
+  $$('#cards input.e').forEach(i => i.onchange = async () => {
+    const id = i.closest('tr').dataset.id;
+    const v = i.type === 'checkbox' ? i.checked : (i.value === '' ? null : Number(i.value));
+    await api('/cards/' + id, { method: 'PUT', body: { [i.dataset.f]: v } });
+    toast('Saved'); load();
+  });
+  $$('#cards button[data-del]').forEach(b => b.onclick = async () => {
+    if (confirm('Remove this card?')) { await api('/cards/' + b.dataset.del, { method: 'DELETE' }); load(); }
+  });
+  $('#rc').innerHTML = cards.map(c => `<option value="${c.id}">${esc(c.nickname)} ·${esc(c.last4 || '')}</option>`).join('');
+
+  const rules = await api('/card-rules');
+  $('#rules').innerHTML = rules.map(r => `<tr><td><b>${esc(r.merchant)}</b></td><td class="num">${r.rank}</td>
+    <td>${esc(r.nickname)} <span class="hint">·${esc(r.last4 || '')} — ${money0(r.available)} left</span></td>
+    <td>${esc(r.shipping_method || '—')}</td>
+    <td><button class="sm danger" data-r="${r.id}">×</button></td></tr>`).join('')
+    || `<tr><td colspan="5" class="empty">No site rules — the global order is used everywhere.</td></tr>`;
+  $$('#rules button[data-r]').forEach(b => b.onclick = async () => {
+    await api('/card-rules/' + b.dataset.r, { method: 'DELETE' }); load();
+  });
+}
+
+$('#addBtn').onclick = () => $('#dlg').showModal();
+$('#cancel').onclick = () => $('#dlg').close();
+$('#save').onclick = async () => {
+  const b = {
+    nickname: $('#f_nick').value, network: $('#f_net').value, last4: $('#f_l4').value,
+    credit_limit: +$('#f_lim').value, priority: +$('#f_pri').value,
+    max_per_txn: +$('#f_mx').value, daily_cap: +$('#f_dc').value,
+    statement_day: $('#f_sd').value ? +$('#f_sd').value : null,
+  };
+  if ($('#f_av').value) b.available = +$('#f_av').value;
+  await api('/cards', { method: 'POST', body: b }); $('#dlg').close(); toast('Card added'); load();
+};
+$('#addRule').onclick = async () => {
+  await api('/card-rules', { method: 'POST', body: {
+    merchant: $('#rm').value.trim().toLowerCase(), card_id: +$('#rc').value,
+    rank: +$('#rr').value, shipping_method: $('#rs').value } });
+  $('#rm').value = ''; $('#rs').value = ''; load();
+};
+$('#sim').onclick = async () => {
+  const p = await api(`/cards/plan-preview?merchant=${encodeURIComponent($('#sm').value)}&unit_price=${$('#sp').value}&qty=${$('#sq').value}`, { method: 'POST' });
+  $('#simOut').innerHTML = `
+    ${(p.charges || []).map((c, i) => `<div style="display:flex;gap:10px;padding:7px 0;border-bottom:1px solid var(--grid)">
+      <div style="flex:0 0 20px;color:var(--muted);font-weight:700">${i + 1}</div>
+      <div style="flex:1"><b>${esc(c.card_label)}</b> — ${c.qty} unit(s), ${money(c.amount)}
+        <div class="hint">${esc(c.reason)}</div></div></div>`).join('')}
+    <div style="margin-top:10px;display:flex;justify-content:space-between">
+      <b>${p.qty_planned} of ${p.qty_requested} units</b><b>${money(p.total)}</b></div>
+    ${p.shortfall_reason ? `<div class="hint" style="color:var(--warning);margin-top:6px">${esc(p.shortfall_reason)}</div>` : ''}
+    <details style="margin-top:10px"><summary class="hint">cards considered</summary>
+      <ul class="reasons">${(p.considered || []).map(c => `<li class="${c.skipped ? 'fail' : 'pass'}">${esc(c.card)} — ${esc(c.skipped || `took ${c.takes} unit(s), ${money(c.amount)}`)}</li>`).join('')}</ul></details>`;
+};
+load();
+</script></body></html>

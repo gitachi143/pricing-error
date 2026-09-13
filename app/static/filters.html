@@ -1,0 +1,75 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deal Desk — Buying filters</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/styles.css"></head><body>
+<main>
+  <header class="page"><div><h1>Buying filters</h1>
+    <div class="sub">These are the rules the bot checks before it buys anything. Every deal shows which
+      of them passed and which failed.</div></div>
+    <div class="row" style="flex:0 0 auto"><button id="reset">Reset to defaults</button>
+      <button class="primary" id="save">Save</button></div></header>
+  <div id="groups" class="grid" style="grid-template-columns:repeat(auto-fit,minmax(330px,1fr))"></div>
+</main>
+<script src="/app.js"></script>
+<script>
+shell('/filters');
+const FIELDS = {
+  'Money': [
+    ['min_discount_pct', 'Minimum discount', 'number', '% off the reference price before it counts as an error'],
+    ['min_profit_per_unit', 'Minimum profit per unit', 'number', 'after resale fees and outbound shipping'],
+    ['min_resale_ratio', 'Minimum market/price ratio', 'number', '1.35 = worth at least 35% more than you pay'],
+    ['max_unit_price', 'Max price per unit', 'number', 'never pay more than this for one item'],
+    ['max_spend_per_deal', 'Max spend per deal', 'number', 'caps qty × price on a single link'],
+    ['max_qty_per_deal', 'Max units per deal', 'number', 'also bounded by what the site allows'],
+    ['min_price_floor', 'Ignore prices below', 'number', 'guards against a mis-parsed $0.01'],
+    ['resale_fee_pct', 'Resale fee %', 'number', 'eBay/StockX style cut used in the profit math'],
+    ['ship_cost_est', 'Your shipping cost per unit', 'number', 'subtracted from profit'],
+    ['tax_rate', 'Sales tax rate', 'number', 'used for credit-limit math, e.g. 0.08'],
+  ],
+  'Trust & returns': [
+    ['min_trust', 'Minimum link trust', 'select:TRUSTED,UNKNOWN,SUSPICIOUS', 'TRUSTED = exact match on your merchant list'],
+    ['require_returnable', 'Must be returnable', 'bool', ''],
+    ['min_return_window_days', 'Minimum return window (days)', 'number', ''],
+    ['max_restocking_fee_pct', 'Max restocking fee %', 'number', ''],
+    ['block_final_sale', 'Never buy final-sale items', 'bool', ''],
+    ['max_cancel_risk', 'Max merchant cancel risk', 'select:low,medium,high', 'how often they void price errors'],
+    ['require_in_stock', 'Must be in stock', 'bool', ''],
+  ],
+  'Product': [
+    ['min_demand_score', 'Minimum demand score', 'number', '0–1; how fast it moves if you flip it'],
+    ['allow_categories', 'Only these categories', 'list', 'blank = all'],
+    ['deny_categories', 'Never these categories', 'list', ''],
+    ['allow_sizes', 'Only these sizes', 'list', 'e.g. M, L, 10, 10.5'],
+    ['deny_sizes', 'Never these sizes', 'list', ''],
+    ['allow_merchants', 'Only these merchants', 'list', 'blank = any trusted merchant'],
+    ['deny_merchants', 'Never these merchants', 'list', ''],
+  ],
+  'Behaviour': [
+    ['allow_unknown_market', 'Buy without a market comp', 'bool', 'off = hold it for you to look at'],
+    ['hold_instead_of_skip', 'Send near-misses to HOLD', 'bool', 'instead of silently skipping'],
+  ],
+};
+let values = {}, defaults = {};
+
+function render() {
+  $('#groups').innerHTML = Object.entries(FIELDS).map(([g, fs]) => `<section class="card"><h2>${g}</h2>
+    ${fs.map(([k, label, type, help]) => {
+      const v = values[k];
+      let input;
+      if (type === 'bool') input = `<label class="switch"><input type="checkbox" data-k="${k}" ${v ? 'checked' : ''}><span>${v ? 'on' : 'off'}</span></label>`;
+      else if (type === 'list') input = `<input data-k="${k}" data-t="list" value="${esc((v || []).join(', '))}" placeholder="comma separated">`;
+      else if (type.startsWith('select:')) input = `<select data-k="${k}">${type.slice(7).split(',').map(o => `<option ${o === v ? 'selected' : ''}>${o}</option>`).join('')}</select>`;
+      else input = `<input type="number" step="any" data-k="${k}" data-t="num" value="${v ?? ''}">`;
+      return `<div class="field"><label>${label}</label>${input}${help ? `<div class="hint">${help}</div>` : ''}</div>`;
+    }).join('')}</section>`).join('');
+  $$('[data-k]').forEach(el => el.onchange = () => {
+    const k = el.dataset.k;
+    values[k] = el.type === 'checkbox' ? el.checked
+      : el.dataset.t === 'list' ? el.value.split(',').map(s => s.trim()).filter(Boolean)
+      : el.dataset.t === 'num' ? (el.value === '' ? null : Number(el.value)) : el.value;
+    if (el.type === 'checkbox') el.nextElementSibling.textContent = el.checked ? 'on' : 'off';
+  });
+}
+$('#save').onclick = async () => { await api('/filters', { method: 'PUT', body: values }); toast('Filters saved'); };
+$('#reset').onclick = async () => { if (confirm('Reset every filter to the defaults?')) { values = { ...defaults }; render(); await api('/filters', { method: 'PUT', body: values }); toast('Reset'); } };
+(async () => { const f = await api('/filters'); values = f.values; defaults = f.defaults; render(); })();
+</script></body></html>

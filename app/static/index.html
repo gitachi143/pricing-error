@@ -1,0 +1,123 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deal Desk — Overview</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/styles.css"></head><body>
+<main>
+  <header class="page">
+    <div><h1>Overview</h1><div class="sub" id="sub">Loading…</div></div>
+    <div style="display:flex;gap:10px;align-items:center">
+      <label class="switch" title="When off, carts are prepared but never paid for">
+        <input type="checkbox" id="autoBuy"><span>Auto-buy</span></label>
+      <a class="btn primary" href="/testbench" style="text-decoration:none">Test a link</a>
+    </div>
+  </header>
+
+  <div class="grid tiles" id="tiles"></div>
+
+  <div class="split" style="margin-top:12px">
+    <section class="card">
+      <h2>How it works</h2>
+      <p class="sub" style="color:var(--muted);margin-bottom:12px">
+        A link lands, the domain gets vetted, and research + checkout run side by side so the cart is
+        already parked at the review page by the time the numbers come back.</p>
+      <div id="diagram"></div>
+    </section>
+
+    <div class="stack">
+      <section class="card">
+        <h2>Decisions, last 7 days</h2>
+        <div class="bars" id="decisionBars"></div>
+      </section>
+      <section class="card">
+        <h2>Checkout playbooks</h2>
+        <div id="pbHealth"></div>
+        <div class="hint" style="margin-top:8px">Refreshed nightly by the ChatGPT recon task.
+          Anything stale is a merchant the bot will not auto-buy from.</div>
+      </section>
+      <section class="card">
+        <h2>Latest activity</h2>
+        <div class="log" id="feed" style="max-height:320px;overflow:auto;margin:0 -16px"></div>
+      </section>
+    </div>
+  </div>
+</main>
+
+<dialog id="testDlg">
+  <h2>Run a message through the pipeline</h2>
+  <div class="field"><label>Paste a Discord message or a bare link</label>
+    <textarea id="testMsg" placeholder="🔥 PRICE ERROR https://www.target.com/p/…  $39 (was $399)"></textarea></div>
+  <div class="row"><button class="primary" id="runTest">Run it</button>
+    <button id="closeTest" class="ghost">Close</button></div>
+  <div id="testOut" style="margin-top:12px"></div>
+</dialog>
+
+<script src="/app.js"></script>
+<script>
+shell('/');
+fetch('/diagram.svg').then(r => r.text()).then(s => $('#diagram').innerHTML = s);
+
+const DEC = { BUY: 'var(--s1)', HOLD: 'var(--s4)', SKIP: 'var(--muted)', BLOCKED: 'var(--critical)' };
+
+async function load() {
+  const s = await api('/stats');
+  $('#autoBuy').checked = s.auto_buy;
+  const capPct = s.daily_cap ? Math.min(100, 100 * s.spend_24h / s.daily_cap) : 0;
+  const buy = s.by_decision_7d.BUY || 0, all = Object.values(s.by_decision_7d).reduce((a, b) => a + b, 0);
+
+  $('#tiles').innerHTML = [
+    tile('Links seen · 24h', num(s.deals_24h), `${num(s.deals_7d)} in the last 7 days`),
+    tile('Decided to buy · 7d', num(buy), all ? `${Math.round(100 * buy / all)}% of everything posted` : 'nothing yet'),
+    tile('Spent today', money0(s.spend_24h),
+         `of ${money0(s.daily_cap)} cap<div class="meter"><i style="width:${capPct}%;background:${capPct > 85 ? 'var(--critical)' : 'var(--s1)'}"></i></div>`),
+    tile('Credit available', money0(s.credit_available), `of ${money0(s.credit_total)} across your cards`),
+    tile('Orders in flight', num(s.orders_open), `${num(s.orders_failed_24h)} failed in 24h`),
+    tile('Decision latency', Math.round(s.median_latency_ms) + ' ms', 'link → buy/skip call'),
+  ].join('');
+
+  $('#decisionBars').innerHTML = Object.keys(DEC).map(k => {
+    const v = s.by_decision_7d[k] || 0, w = all ? Math.max(v ? 3 : 0, 100 * v / all) : 0;
+    return `<div class="b"><span>${k}</span><span class="track"><i style="width:${w}%;background:${DEC[k]}"></i></span><span class="n">${v}</span></div>`;
+  }).join('') + (all ? '' : '<div class="hint">No deals yet — use “Test a link”.</div>');
+
+  const pb = s.playbooks || [];
+  const byHealth = h => pb.filter(p => p.health === h).length;
+  $('#pbHealth').innerHTML = `
+    <div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:9px">
+      ${chip(`${byHealth('fresh')} fresh`, 'ok')}${chip(`${byHealth('aging')} aging`, 'warn')}
+      ${chip(`${byHealth('stale')} stale`, 'mute')}${chip(`${byHealth('missing')} missing`, 'err')}</div>
+    ${pb.filter(p => p.health !== 'fresh').slice(0, 6).map(p =>
+      `<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:12.5px">
+        <span>${esc(p.domain)}</span>${chip(p.health, p.health)}</div>`).join('')
+      || '<div class="hint">Every merchant has a fresh playbook.</div>'}
+    <div style="margin-top:9px"><a href="/playbooks">Open playbooks →</a></div>`;
+
+  const ev = await api('/events?limit=40');
+  $('#feed').innerHTML = ev.map(e => `<div class="ln ${e.level}"><span class="ts">${clock(e.ts)}</span>
+    <span class="stage">${esc(e.stage || '')}</span><span class="msg">${esc(e.message)}</span></div>`).join('');
+  $('#sub').innerHTML = `${s.auto_buy ? '<b style="color:var(--good-text)">Auto-buy is ON</b>' :
+    'Auto-buy is off — carts are prepared, you press the button'} · inventory at cost ${money0(s.inventory_value)}`;
+}
+const tile = (label, value, foot) =>
+  `<div class="card tile"><div class="label">${label}</div><div class="value">${value}</div><div class="foot">${foot}</div></div>`;
+
+$('#autoBuy').onchange = async e => {
+  await api('/settings', { method: 'PUT', body: { auto_buy: e.target.checked } });
+  toast(e.target.checked ? 'Auto-buy ON — the bot will pay' : 'Auto-buy off');
+  load();
+};
+$('#closeTest').onclick = () => $('#testDlg').close();
+$('#runTest').onclick = async () => {
+  const btn = $('#runTest'); btn.disabled = true; btn.textContent = 'Running…';
+  try {
+    const r = await api('/ingest/message', { method: 'POST', body: { message: $('#testMsg').value, source: 'manual' } });
+    $('#testOut').innerHTML = r.deals.length ? r.deals.map(d => `
+      <div class="card" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;gap:10px">
+        <b>${esc(d.product || '(no name)')}</b>${chip(d.decision)}</div>
+        <div class="hint">${esc(d.merchant || '')} · score ${d.score ?? '—'} · qty ${d.qty ?? 0}
+        · <a href="/deal?id=${d.id}">open →</a></div></div>`).join('')
+      : '<div class="hint">No links found in that message.</div>';
+    load();
+  } catch (e) { $('#testOut').innerHTML = `<div class="hint" style="color:var(--critical)">${esc(e.message)}</div>`; }
+  btn.disabled = false; btn.textContent = 'Run it';
+};
+load(); poll(load, 12000);
+</script></body></html>

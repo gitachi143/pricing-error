@@ -1,0 +1,84 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deal Desk — Checkout playbooks</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/styles.css"></head><body>
+<main>
+  <header class="page"><div><h1>Checkout playbooks</h1>
+    <div class="sub">Recorded click-by-click instructions for each merchant's checkout, refreshed nightly by
+      a ChatGPT scheduled task. The worker replays them with no model in the loop — that's what makes
+      checkout fast.</div></div>
+    <button id="pasteBtn">Paste a playbook</button></header>
+
+  <div class="split">
+    <section class="card"><h2>Coverage</h2>
+      <div class="t-wrap" style="max-height:none"><table><thead><tr><th>Merchant</th><th>Live version</th>
+        <th class="num">Confidence</th><th>Age</th><th>Health</th><th>Checkout</th><th></th></tr></thead>
+        <tbody id="cov"></tbody></table></div>
+      <div class="hint" style="margin-top:8px">fresh &lt; 26h · aging &lt; 36h · stale beyond that.
+        A merchant with no live playbook still gets researched — it just won't auto-check-out.</div>
+    </section>
+    <section class="card"><h2>Versions</h2>
+      <div id="versions" style="max-height:64vh;overflow:auto"></div></section>
+  </div>
+</main>
+
+<dialog id="dlg"><h2>Paste playbook JSON</h2>
+  <div class="hint" style="margin-bottom:8px">Same payload the ChatGPT task posts to
+    <code>/api/ingest/playbook</code>. It's validated before it's stored.</div>
+  <textarea id="pb" style="min-height:220px" placeholder='{"schema_version":"1.0","merchant":"…"}'></textarea>
+  <div class="row" style="margin-top:10px"><button class="primary" id="send">Validate &amp; store</button>
+    <button class="ghost" id="close">Close</button></div>
+  <div id="res" style="margin-top:10px"></div></dialog>
+
+<script src="/app.js"></script>
+<script>
+shell('/playbooks');
+async function load() {
+  const cov = await api('/playbooks/coverage');
+  $('#cov').innerHTML = cov.map(c => `<tr><td><b>${esc(c.domain)}</b><div class="hint">${esc(c.name || '')}</div></td>
+    <td class="mono">${esc(c.version || '—')}</td>
+    <td class="num">${c.confidence != null ? c.confidence.toFixed(2) : '—'}</td>
+    <td>${c.age_hours != null ? c.age_hours + 'h' : '—'}</td>
+    <td>${chip(c.health, c.health === 'fresh' ? 'ok' : c.health === 'aging' ? 'warn' : c.health === 'missing' ? 'err' : 'mute')}</td>
+    <td>${esc(c.checkout_difficulty || '—')}</td>
+    <td><button class="sm" data-v="${esc(c.domain)}">versions</button>
+        ${c.id ? `<button class="sm" data-rb="${esc(c.domain)}">roll back</button>` : ''}</td></tr>`).join('');
+  $$('#cov button[data-v]').forEach(b => b.onclick = () => showVersions(b.dataset.v));
+  $$('#cov button[data-rb]').forEach(b => b.onclick = async () => {
+    try { const r = await api('/playbooks/rollback/' + b.dataset.rb, { method: 'POST' });
+      toast('Rolled back to ' + r.restored); load(); } catch (e) { toast(e.message, true); }
+  });
+}
+async function showVersions(merchant) {
+  const rows = await api('/playbooks?merchant=' + encodeURIComponent(merchant));
+  $('#versions').innerHTML = `<h3>${esc(merchant)}</h3>` + (rows.map(p => `
+    <div style="border-bottom:1px solid var(--grid);padding:8px 0">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <span class="mono">${esc(p.version)}</span>${chip(p.status, p.status === 'active' ? 'ok' : 'mute')}</div>
+      <div class="hint">conf ${p.confidence?.toFixed(2) ?? '—'} · smoke ${esc(p.smoke_status || '—')} ·
+        ${esc(p.generated_by || '')} · ${ago(p.created_at)}</div>
+      <div style="margin-top:5px">
+        ${p.status !== 'active' ? `<button class="sm" data-p="${p.id}">make live</button>` : ''}
+        <button class="sm ghost" data-j="${p.id}">view JSON</button></div></div>`).join('')
+    || '<div class="hint">No versions stored yet.</div>');
+  $$('#versions button[data-p]').forEach(b => b.onclick = async () => {
+    await api(`/playbooks/${b.dataset.p}/promote`, { method: 'POST' }); toast('Now live'); load(); showVersions(merchant);
+  });
+  $$('#versions button[data-j]').forEach(b => b.onclick = async () => {
+    const p = await api('/playbooks/' + b.dataset.j);
+    const w = window.open('', '_blank');
+    w.document.write('<pre style="font:12px ui-monospace;padding:16px;white-space:pre-wrap">'
+      + JSON.stringify(p.json, null, 2).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c])) + '</pre>');
+  });
+}
+$('#pasteBtn').onclick = () => $('#dlg').showModal();
+$('#close').onclick = () => $('#dlg').close();
+$('#send').onclick = async () => {
+  try {
+    const body = JSON.parse($('#pb').value);
+    const r = await api('/ingest/playbook', { method: 'POST', body });
+    $('#res').innerHTML = `<div class="chip ok"><span class="g"></span>stored as ${esc(r.status)}</div>`;
+    load();
+  } catch (e) { $('#res').innerHTML = `<div class="hint" style="color:var(--critical)">${esc(e.message)}</div>`; }
+};
+load();
+</script></body></html>

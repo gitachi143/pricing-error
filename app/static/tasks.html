@@ -1,0 +1,141 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deal Desk — Tasks</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/styles.css"></head><body>
+<main>
+  <header class="page">
+    <div><h1>Tasks</h1><div class="sub">The scheduled ChatGPT jobs that keep this current, and the
+      checkout worker on your machine. What ran, when, and what it said.</div></div>
+    <button id="refresh">Refresh</button>
+  </header>
+
+  <h2 style="margin-bottom:9px">Scheduled ChatGPT tasks</h2>
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));margin-bottom:18px"
+       id="tasks"></div>
+
+  <div class="split">
+    <section class="card">
+      <h2>Task history</h2>
+      <div class="row" style="margin-bottom:9px">
+        <select id="filter" style="flex:0 0 190px"><option value="">every task</option>
+          <option value="recon">recon</option><option value="shipping">shipping</option>
+          <option value="comps">comps</option><option value="discord">discord relay</option></select>
+      </div>
+      <div class="t-wrap" style="max-height:60vh"><table><thead><tr><th>When</th><th>Task</th>
+        <th>Status</th><th>What happened</th></tr></thead><tbody id="runs"></tbody></table></div>
+    </section>
+
+    <div class="stack">
+      <section class="card">
+        <h2>Checkout worker</h2>
+        <div id="worker"></div>
+      </section>
+      <section class="card">
+        <h2>Merchant sign-ins</h2>
+        <div id="sessions"></div>
+        <div class="hint" style="margin-top:9px">Logins live on your machine, not here. Add them at
+          <code>python3 worker/vault_server.py</code> → <a href="http://127.0.0.1:8765"
+          target="_blank" rel="noreferrer">127.0.0.1:8765</a></div>
+      </section>
+    </div>
+  </div>
+
+  <section class="card" style="margin-top:12px">
+    <h2>Recent worker jobs</h2>
+    <div class="t-wrap" style="max-height:52vh"><table><thead><tr><th>When</th><th>Kind</th>
+      <th>Deal</th><th>State</th><th>Result</th><th>Tries</th></tr></thead>
+      <tbody id="jobs"></tbody></table></div>
+  </section>
+</main>
+<script src="/app.js"></script>
+<script>
+shell('/tasks');
+let allRuns = [];
+
+const HEALTH = { ok: 'ok', due: 'warn', late: 'err', failing: 'err', never: 'mute' };
+const HEALTH_TEXT = { ok: 'healthy', due: 'due now', late: 'overdue', failing: 'failing',
+                      never: 'never run' };
+
+async function load() {
+  const [tasks, w, sessions, jobs] = await Promise.all([
+    api('/tasks'), api('/worker/status'), api('/sessions'), api('/worker/jobs?limit=80')]);
+
+  $('#tasks').innerHTML = tasks.map(t => {
+    const last = t.last;
+    return `<section class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <b>${esc(t.label)}</b>${chip(HEALTH_TEXT[t.health], HEALTH[t.health])}</div>
+      <div class="hint" style="margin-top:5px">
+        ${t.every_hours ? `expected every ${t.every_hours}h · ` : ''}${t.run_count_7d} run(s) in 7 days</div>
+      <div style="margin-top:9px;font-size:13px">
+        ${last ? `<div>${esc(last.summary || '')}</div>
+          <div class="hint">${ago(last.ts)} · ${esc(last.source || '')}</div>
+          ${last.errors ? `<div class="hint" style="color:var(--critical)">${esc(
+            (Array.isArray(last.errors) ? last.errors : [last.errors]).slice(0,3).join('; '))}</div>` : ''}`
+          : `<div class="hint">Nothing has reported yet.${t.prompt
+              ? ` Set it up from <a href="/settings">Settings</a> using <code>${esc(t.prompt)}</code>.` : ''}</div>`}
+      </div></section>`;
+  }).join('');
+
+  allRuns = tasks.flatMap(t => (t.runs || []).map(r => ({ ...r, label: t.label })));
+  allRuns.sort((a, b) => b.ts - a.ts);
+  renderRuns();
+
+  const hb = w.heartbeat;
+  $('#worker').innerHTML = `
+    <div>${chip(w.online ? 'online' : 'offline', w.online ? 'ok' : 'err')}
+      <span class="hint">${hb ? `${esc(hb.worker_id)} · last seen ${ago(hb.ts)}` : 'never connected'}</span></div>
+    <div style="margin-top:9px">${(w.queue || []).length
+      ? (w.queue || []).map(q => `<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:12.5px">
+          <span>${esc(q.kind)} · ${esc(q.state)}</span><b>${q.n}</b></div>`).join('')
+      : '<div class="hint">Queue is empty.</div>'}</div>
+    ${w.online ? '' : `<div class="hint" style="margin-top:9px">Deals are still being vetted and
+      logged — they just won't be bought until the worker is running.</div>`}`;
+
+  $('#sessions').innerHTML = sessions.filter(s => s.login_required || s.status !== 'unknown').length
+    ? sessions.filter(s => s.login_required || s.status !== 'unknown').map(s => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;gap:8px">
+        <span>${esc(s.domain)}<div class="hint">${s.last_checked ? 'checked ' + ago(s.last_checked) : 'never checked'}</div></span>
+        ${chip(s.status.replace(/_/g, ' '), s.status === 'signed_in' ? 'ok'
+          : s.status === 'manual_login_needed' ? 'err'
+          : s.status === 'no_credentials' ? 'mute' : 'warn')}</div>`).join('')
+    : '<div class="hint">No merchant needs a login yet. Turn on “needs login” for a merchant to track it.</div>';
+
+  $('#jobs').innerHTML = jobs.map(j => `<tr>
+    <td>${dt(j.created_at)}<div class="hint">${ago(j.created_at)}</div></td>
+    <td>${chip(j.kind, j.kind === 'place' ? 'info' : 'mute')}</td>
+    <td>${j.deal_id ? `<a href="/deal?id=${j.deal_id}">${esc(j.product_name || '#' + j.deal_id)}</a>
+        <div class="hint">${esc(j.merchant || '')}</div>` : '—'}</td>
+    <td>${chip(j.state, j.state === 'done' ? 'ok' : j.state === 'failed' ? 'err'
+        : j.state === 'expired' ? 'mute' : 'warn')}</td>
+    <td style="max-width:420px">${jobResult(j)}</td>
+    <td class="num">${j.attempts || 0}</td></tr>`).join('')
+    || `<tr><td colspan="6" class="empty">No worker jobs yet.</td></tr>`;
+}
+
+function jobResult(j) {
+  const r = j.result;
+  if (!r) return '<span class="hint">—</span>';
+  const msg = r.message || r.reason || '';
+  const lines = (r.data && r.data.lines) || [];
+  return `${esc(msg)}${lines.length ? `<details><summary class="hint" style="cursor:pointer">${lines.length} steps</summary>
+    <div class="log" style="font-size:11px;margin-top:4px">${lines.map(l =>
+      `<div style="padding:1px 0">${esc(l)}</div>`).join('')}</div></details>` : ''}`;
+}
+
+function renderRuns() {
+  const f = $('#filter').value;
+  const rows = allRuns.filter(r => !f || r.task === f);
+  $('#runs').innerHTML = rows.map(r => `<tr>
+    <td>${dt(r.ts)}<div class="hint">${ago(r.ts)}</div></td>
+    <td>${esc(r.task)}<div class="hint">${esc(r.source || '')}</div></td>
+    <td>${chip(r.status, r.status === 'ok' ? 'ok' : r.status === 'partial' ? 'warn' : 'err')}</td>
+    <td>${esc(r.summary || '')}
+      ${r.errors ? `<div class="hint" style="color:var(--critical)">${esc(
+        (Array.isArray(r.errors) ? r.errors : [r.errors]).join('; ')).slice(0, 300)}</div>` : ''}</td>
+  </tr>`).join('') || `<tr><td colspan="4" class="empty">Nothing reported yet.</td></tr>`;
+}
+
+$('#filter').onchange = renderRuns;
+$('#refresh').onclick = load;
+load(); poll(load, 20000);
+</script></body></html>

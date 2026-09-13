@@ -1,0 +1,99 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deal Desk — Deal</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/styles.css"></head><body>
+<main>
+  <header class="page">
+    <div><h1 id="title">Deal</h1><div class="sub" id="sub"></div></div>
+    <div class="row" style="flex:0 0 auto">
+      <button id="recheck">Re-check</button>
+      <button id="skip">Skip</button>
+      <button class="primary" id="buy">Buy now</button>
+    </div>
+  </header>
+  <div class="split">
+    <div class="stack">
+      <section class="card"><h2>Why</h2><div class="row" style="gap:26px">
+        <div style="flex:1 1 260px"><h3>Passed</h3><ul class="reasons" id="passed"></ul></div>
+        <div style="flex:1 1 260px"><h3>Failed / notes</h3><ul class="reasons" id="failed"></ul></div>
+      </div></section>
+      <section class="card"><h2>Link trust</h2><div id="trust"></div></section>
+      <section class="card"><h2>Timeline</h2>
+        <div class="log" id="events" style="margin:0 -16px;max-height:420px;overflow:auto"></div></section>
+    </div>
+    <div class="stack">
+      <section class="card"><h2>Numbers</h2><dl class="kv" id="kv"></dl></section>
+      <section class="card"><h2>Payment plan</h2><div id="plan"></div></section>
+      <section class="card"><h2>Orders</h2><div id="orders"></div></section>
+    </div>
+  </div>
+</main>
+<script src="/app.js"></script>
+<script>
+shell('/console');
+const id = new URLSearchParams(location.search).get('id');
+let deal = null;
+
+async function load() {
+  deal = await api('/deals/' + id);
+  const d = deal;
+  $('#title').textContent = d.product_name || '(unnamed product)';
+  $('#sub').innerHTML = `${chip(d.decision || 'PENDING')} ${chip(d.status || '', 'mute')}
+    <a href="${esc(d.final_url || d.url)}" target="_blank" rel="noreferrer noopener">${host(d.merchant)} ↗</a>
+    · seen ${ago(d.created_at)} · decided in ${d.latency_ms ?? '—'} ms`;
+
+  const r = d.decision_reasons || {};
+  $('#passed').innerHTML = (r.passed || []).map(x => `<li class="pass">${esc(x)}</li>`).join('') || '<li class="note">—</li>';
+  $('#failed').innerHTML = ((r.failed || []).map(x => `<li class="fail">${esc(x)}</li>`)
+    .concat((r.notes || []).map(x => `<li class="note">${esc(x)}</li>`))).join('') || '<li class="note">nothing blocking</li>';
+
+  $('#trust').innerHTML = `<div style="margin-bottom:8px">${chip(d.trust_verdict)}
+    <span class="mono" style="color:var(--ink-2)">${host(d.merchant)}</span></div>
+    <ul class="reasons">${(d.trust_reasons || []).map(x => `<li class="${d.trust_verdict === 'TRUSTED' ? 'pass' : 'fail'}">${esc(x)}</li>`).join('')}</ul>
+    ${d.trust_verdict !== 'TRUSTED' ? `<button class="sm" style="margin-top:8px" id="trustBtn">Trust ${esc(d.merchant)} from now on</button>` : ''}`;
+  if ($('#trustBtn')) $('#trustBtn').onclick = async () => {
+    await api('/merchants/trust', { method: 'POST', body: { domain: deal.merchant, name: deal.merchant } });
+    toast('Added to your trusted merchants'); load();
+  };
+
+  const p = d.raw_product || {};
+  $('#kv').innerHTML = [
+    ['Listed price', money(d.listed_price)], ['Market value', `${money(d.market_price)} <span class="hint">${esc(d.market_price_source || '')}</span>`],
+    ['Discount', pct(d.discount_pct)], ['Profit / unit', money(d.est_profit_unit)],
+    ['Score', `<b>${d.score ?? '—'}</b> / 100`], ['Demand', d.demand_score != null ? d.demand_score.toFixed(2) : '—'],
+    ['Category', esc(d.category || '—')], ['Size', esc(d.size || '—')], ['Brand', esc(d.brand || '—')],
+    ['SKU', `<span class="mono">${esc(d.sku || '—')}</span>`],
+    ['Stock', esc(p.availability || 'unknown')],
+    ['Returns', d.returnable ? `${d.return_window_days} days` : '<span style="color:var(--critical)">not returnable</span>'],
+    ['Qty planned', d.target_qty || 0],
+    ['Playbook', d.playbook ? `${esc(d.playbook.version)} <span class="hint">conf ${d.playbook.confidence}</span>` : '<span style="color:var(--critical)">none</span>'],
+  ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+
+  $('#events').innerHTML = (d.events || []).slice().reverse().map(e => `<div class="ln ${e.level}">
+    <span class="ts">${clock(e.ts)}</span><span class="stage">${esc(e.stage || '')}</span>
+    <span class="msg">${esc(e.message)}</span></div>`).join('');
+
+  $('#orders').innerHTML = (d.orders || []).map(o => `<div style="border-bottom:1px solid var(--grid);padding:6px 0">
+    <div style="display:flex;justify-content:space-between"><b class="mono">${esc(o.order_number || 'no number')}</b>${chip(o.ship_status || o.status)}</div>
+    <div class="hint">${o.qty}× on ${esc(o.card_label || '—')} · ${money(o.total)}${o.tracking_number ? ` · ${esc(o.carrier || '')} ${esc(o.tracking_number)}` : ''}</div>
+    ${o.failure_reason ? `<div class="hint" style="color:var(--critical)">${esc(o.failure_stage)}: ${esc(o.failure_reason)}</div>` : ''}
+  </div>`).join('') || '<div class="hint">No orders placed for this deal.</div>';
+
+  try {
+    const pl = await api(`/cards/plan-preview?merchant=${encodeURIComponent(d.merchant)}&unit_price=${d.listed_price || 0}&qty=${d.target_qty || 1}`, { method: 'POST' });
+    $('#plan').innerHTML = (pl.charges || []).map(c => `<div style="padding:5px 0;border-bottom:1px solid var(--grid)">
+      <div style="display:flex;justify-content:space-between"><b>${esc(c.card_label)}</b><span>${money(c.amount)}</span></div>
+      <div class="hint">${c.qty} unit(s) — ${esc(c.reason)}</div></div>`).join('')
+      + (pl.shortfall_reason ? `<div class="hint" style="color:var(--warning);margin-top:6px">${esc(pl.shortfall_reason)}</div>` : '')
+      || '<div class="hint">No card can cover this right now.</div>';
+  } catch (e) { $('#plan').innerHTML = `<div class="hint">${esc(e.message)}</div>`; }
+}
+
+$('#buy').onclick = async () => {
+  if (!confirm(`Place the order now for ${deal.target_qty || 1} unit(s)?`)) return;
+  try { const r = await api(`/deals/${id}/buy`, { method: 'POST' }); toast('Queued — worker is placing it'); load(); }
+  catch (e) { toast(e.message, true); }
+};
+$('#skip').onclick = async () => { await api(`/deals/${id}/skip`, { method: 'POST' }); toast('Skipped'); load(); };
+$('#recheck').onclick = async () => { $('#recheck').disabled = true; await api(`/deals/${id}/recheck`, { method: 'POST' }); $('#recheck').disabled = false; toast('Re-checked'); load(); };
+load(); poll(load, 10000);
+</script></body></html>

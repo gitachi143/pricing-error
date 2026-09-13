@@ -1,0 +1,191 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deal Desk — Merchants</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/styles.css"></head><body>
+<main>
+  <header class="page">
+    <div><h1>Merchants</h1><div class="sub">Your rules per site: how fast to ship, what you'll pay
+      for it, what the returns actually look like, and whether it needs a login. Checkout follows
+      these.</div></div>
+    <div class="row" style="flex:0 0 auto">
+      <input id="newDomain" placeholder="add domain.com" style="flex:0 0 180px">
+      <button id="add" style="flex:0 0 auto">Add</button></div>
+  </header>
+
+  <div class="split" style="grid-template-columns:340px 1fr">
+    <section class="card" style="padding:10px">
+      <input id="q" placeholder="filter merchants" style="margin-bottom:8px">
+      <div id="list" style="max-height:74vh;overflow:auto"></div>
+    </section>
+    <div id="editor"><div class="card"><div class="empty">Pick a merchant on the left.</div></div></div>
+  </div>
+</main>
+<script src="/app.js"></script>
+<script>
+shell('/merchants');
+let merchants = [], selected = new URLSearchParams(location.search).get('m') || null;
+
+const PREFS = [
+  ['cheapest',  'Cheapest',  'free/lowest-cost option, however slow'],
+  ['standard',  'Standard',  'the option the site calls standard'],
+  ['expedited', 'Expedited', 'fastest you allow paying for'],
+  ['fastest',   'Fastest',   'fastest full stop, subject to your cap'],
+  ['pickup',    'Store pickup', 'collect it yourself — usually the fastest way to actually get it'],
+];
+const RETURN_METHODS = [['', 'not set'], ['mail_free', 'free return label'],
+  ['mail_paid', 'mail it back, you pay'], ['in_store', 'return in store'],
+  ['carrier_pickup', 'carrier collects']];
+
+async function load() {
+  merchants = await api('/merchants');
+  renderList();
+  if (selected) renderEditor(merchants.find(m => m.domain === selected));
+}
+
+function renderList() {
+  const f = ($('#q').value || '').toLowerCase();
+  $('#list').innerHTML = merchants.filter(m => !f || m.domain.includes(f)).map(m => {
+    const flags = [];
+    if (m.login_required) flags.push(m.session && m.session.signed_in
+      ? chip('signed in', 'ok')
+      : (m.session && m.session.needs_manual_login) ? chip('sign in', 'err') : chip('login', 'mute'));
+    if (!m.has_playbook) flags.push(chip('no playbook', 'warn'));
+    return `<div class="mrow ${m.domain === selected ? 'on' : ''}" data-d="${esc(m.domain)}"
+      style="padding:8px 9px;border-radius:8px;cursor:pointer;margin-bottom:2px;
+             ${m.domain === selected ? 'background:color-mix(in srgb,var(--s1) 13%,transparent)' : ''}">
+      <div style="display:flex;justify-content:space-between;gap:6px;align-items:center">
+        <b style="font-size:13px">${esc(m.domain)}</b>
+        <span style="display:flex;gap:3px">${flags.join('')}</span></div>
+      <div class="hint">${esc(prefLabel(m.shipping_pref))}${m.allow_paid_shipping
+        ? ` · up to ${money0(m.max_shipping_cost) === '—' ? 'any' : money0(m.max_shipping_cost)}` : ' · free only'}
+        · ${m.return_window_days || 0}d returns</div></div>`;
+  }).join('') || '<div class="empty">No merchants match.</div>';
+  $$('.mrow').forEach(el => el.onclick = () => {
+    selected = el.dataset.d;
+    history.replaceState(null, '', `/merchants?m=${encodeURIComponent(selected)}`);
+    renderList(); renderEditor(merchants.find(m => m.domain === selected));
+  });
+}
+const prefLabel = p => (PREFS.find(x => x[0] === (p || 'cheapest')) || PREFS[0])[1];
+
+function renderEditor(m) {
+  if (!m) return;
+  const opts = m.shipping_options || [], ex = m.shipping_example || {};
+  $('#editor').innerHTML = `
+  <div class="stack">
+    <section class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div><h2 style="margin:0">${esc(m.domain)}</h2>
+          <div class="hint">${esc(m.name || '')}</div></div>
+        <label class="switch"><input type="checkbox" data-f="trusted" ${m.trusted ? 'checked' : ''}>
+          <span>Allowed to buy from</span></label>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Shipping</h2>
+      <div class="row">
+        <div style="flex:1 1 220px"><label>Preference</label>
+          <select data-f="shipping_pref">${PREFS.map(([v, l, d]) =>
+            `<option value="${v}" ${(m.shipping_pref || 'cheapest') === v ? 'selected' : ''}>${l} — ${d}</option>`).join('')}</select></div>
+      </div>
+      <div class="row" style="margin-top:10px;align-items:center">
+        <label class="switch" style="flex:0 0 auto"><input type="checkbox" data-f="allow_paid_shipping"
+          ${m.allow_paid_shipping ? 'checked' : ''}><span>Pay for faster shipping</span></label>
+        <div style="flex:1 1 140px"><label>Never pay more than</label>
+          <input type="number" step="0.01" data-f="max_shipping_cost" value="${m.max_shipping_cost || 0}">
+          <div class="hint">0 = no ceiling</div></div>
+        <div style="flex:1 1 160px"><label>Auto-expedite orders over</label>
+          <input type="number" step="1" data-f="expedite_over_value" value="${m.expedite_over_value || 0}">
+          <div class="hint">0 = never. A slow ship is a cancelled ship.</div></div>
+      </div>
+
+      <h3 style="margin-top:14px">What this site offers</h3>
+      ${opts.length ? `<div class="t-wrap" style="max-height:none"><table>
+        <thead><tr><th>Option</th><th class="num">Cost</th><th class="num">Days</th><th>Picked?</th></tr></thead>
+        <tbody>${opts.map(o => `<tr>
+          <td>${esc(o.label)}${o.pickup ? ' <span class="chip mute"><span class="g"></span>pickup</span>' : ''}</td>
+          <td class="num">${o.cost ? money(o.cost) : 'free'}</td>
+          <td class="num">${o.days ?? '—'}</td>
+          <td>${o.key === ex.key ? chip('chosen', 'ok') : ''}</td></tr>`).join('')}</tbody></table></div>`
+        : `<div class="hint">No options recorded yet — the nightly recon task writes these once it
+           has mapped this merchant's checkout.</div>`}
+      <div class="hint" style="margin-top:8px">On a $250 order it would pick:
+        <b>${esc(ex.label || 'the site default')}</b> — ${esc(ex.reason || '')}</div>
+    </section>
+
+    <section class="card">
+      <h2>Returns</h2>
+      <div class="row">
+        <div><label>Return window (days)</label>
+          <input type="number" data-f="return_window_days" value="${m.return_window_days || 0}"></div>
+        <div><label>Restocking fee %</label>
+          <input type="number" step="0.1" data-f="restocking_fee_pct" value="${m.restocking_fee_pct || 0}"></div>
+        <div><label>How you return it</label>
+          <select data-f="return_method">${RETURN_METHODS.map(([v, l]) =>
+            `<option value="${v}" ${(m.return_method || '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      </div>
+      <div class="row" style="margin-top:10px;align-items:center">
+        <label class="switch" style="flex:0 0 auto"><input type="checkbox" data-f="free_returns"
+          ${m.free_returns ? 'checked' : ''}><span>Returns are free</span></label>
+        <div style="flex:1 1 180px"><label>How often they void price errors</label>
+          <select data-f="cancel_risk">${['low', 'medium', 'high'].map(v =>
+            `<option value="${v}" ${(m.cancel_risk || 'medium') === v ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+      </div>
+      <div class="field" style="margin-top:10px"><label>Notes from your own research</label>
+        <textarea data-f="return_notes" style="min-height:56px"
+          placeholder="e.g. 90 days but opened electronics are 15; in-store is instant credit">${esc(m.return_notes || '')}</textarea></div>
+    </section>
+
+    <section class="card">
+      <h2>Sign-in</h2>
+      <div class="row" style="align-items:center">
+        <label class="switch" style="flex:0 0 auto"><input type="checkbox" data-f="login_required"
+          ${m.login_required ? 'checked' : ''}><span>Checkout needs an account</span></label>
+        <div style="flex:1">${sessionLine(m)}</div>
+      </div>
+      <div class="hint" style="margin-top:9px">Credentials are stored on your machine only. Add them in
+        the local vault editor (<code>python3 worker/vault_server.py</code>), then do the first sign-in
+        by hand so the browser profile keeps the session:
+        <code>python3 worker/run_worker.py --login ${esc(m.domain)}</code></div>
+    </section>
+
+    <div class="row"><button class="primary" id="save" style="flex:0 0 auto">Save ${esc(m.domain)}</button>
+      <span class="hint" id="saved" style="align-self:center"></span></div>
+  </div>`;
+
+  $$('#editor [data-f]').forEach(el => el.addEventListener('change', () => {}));
+  $('#save').onclick = () => save(m.domain);
+}
+
+function sessionLine(m) {
+  const s = m.session;
+  if (!m.login_required) return '<span class="hint">Not tracked.</span>';
+  if (!s) return '<span class="hint">The worker hasn\'t checked this one yet.</span>';
+  if (s.needs_manual_login) return `${chip('sign in by hand', 'err')}
+    <span class="hint">${esc(s.note || '')}</span>`;
+  return `${chip(s.signed_in ? 'signed in' : 'signed out', s.signed_in ? 'ok' : 'warn')}
+    <span class="hint">${s.last_checked ? 'checked ' + ago(s.last_checked) : ''}
+    ${s.has_credentials ? '· password saved locally' : '· no stored password'}</span>`;
+}
+
+async function save(domain) {
+  const body = {};
+  $$('#editor [data-f]').forEach(el => {
+    body[el.dataset.f] = el.type === 'checkbox' ? el.checked
+      : el.type === 'number' ? Number(el.value) : el.value;
+  });
+  await api('/merchants/' + domain, { method: 'PUT', body });
+  $('#saved').textContent = 'saved ✓';
+  setTimeout(() => $('#saved').textContent = '', 2500);
+  await load();
+}
+
+$('#q').oninput = renderList;
+$('#add').onclick = async () => {
+  const d = $('#newDomain').value.trim().toLowerCase();
+  if (!d) return;
+  await api('/merchants/trust', { method: 'POST', body: { domain: d, name: d } });
+  $('#newDomain').value = ''; selected = d; toast('Added'); load();
+};
+load();
+</script></body></html>

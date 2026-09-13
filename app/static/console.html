@@ -1,0 +1,100 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deal Desk — Console</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/styles.css"></head><body>
+<main>
+  <header class="page">
+    <div><h1>Console</h1><div class="sub">Every link that came in, what the bot decided, and why.</div></div>
+    <div class="row" style="flex:0 0 auto">
+      <input id="q" placeholder="search product / merchant" style="flex:0 0 210px">
+      <select id="dec" style="flex:0 0 150px"><option value="">all decisions</option><option>BUY</option>
+        <option>HOLD</option><option>SKIP</option><option>BLOCKED</option><option>PENDING</option></select>
+      <button id="refresh" style="flex:0 0 auto">Refresh</button>
+    </div>
+  </header>
+
+  <div class="tabs">
+    <button class="on" data-tab="deals">Deals</button>
+    <button data-tab="orders">Orders</button>
+    <button data-tab="failed">Failed</button>
+    <button data-tab="log">Raw log</button>
+  </div>
+
+  <div id="tab-deals"><div class="t-wrap"><table>
+    <thead><tr><th>When</th><th>Product</th><th>Merchant</th><th>Trust</th><th class="num">Price</th>
+      <th class="num">Market</th><th class="num">Off</th><th class="num">Profit/u</th><th class="num">Score</th>
+      <th>Decision</th><th class="num">Qty</th><th>Status</th><th></th></tr></thead>
+    <tbody id="deals"></tbody></table></div></div>
+
+  <div id="tab-orders" hidden><div class="t-wrap"><table>
+    <thead><tr><th>Placed</th><th>Product</th><th>Merchant</th><th>Order #</th><th>Card</th>
+      <th class="num">Qty</th><th class="num">Total</th><th>Shipping</th><th>Status</th><th>ETA</th></tr></thead>
+    <tbody id="orders"></tbody></table></div></div>
+
+  <div id="tab-failed" hidden><div class="t-wrap"><table>
+    <thead><tr><th>When</th><th>Product</th><th>Merchant</th><th>Failed at</th><th>Reason</th>
+      <th class="num">Qty</th><th></th></tr></thead><tbody id="failed"></tbody></table></div></div>
+
+  <div id="tab-log" hidden><div class="card" style="padding:0">
+    <div class="log" id="log" style="max-height:74vh;overflow:auto"></div></div></div>
+</main>
+<script src="/app.js"></script>
+<script>
+shell('/console');
+let tab = 'deals';
+$$('.tabs button').forEach(b => b.onclick = () => {
+  $$('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+  $$('[id^=tab-]').forEach(d => d.hidden = d.id !== 'tab-' + b.dataset.tab);
+  tab = b.dataset.tab; load();
+});
+
+async function load() {
+  if (tab === 'deals') {
+    const rows = await api(`/deals?limit=200&q=${encodeURIComponent($('#q').value)}&decision=${$('#dec').value}`);
+    $('#deals').innerHTML = rows.map(d => `<tr>
+      <td class="mono" style="color:var(--muted)">${clock(d.created_at)}<div style="font-size:11px">${ago(d.created_at)}</div></td>
+      <td><a href="/deal?id=${d.id}"><b>${esc(d.product_name || '(unnamed)')}</b></a>
+          <div class="hint">${esc([d.brand, d.category, d.size].filter(Boolean).join(' · '))}</div></td>
+      <td>${host(d.merchant)}</td>
+      <td>${chip(d.trust_verdict || 'UNKNOWN')}</td>
+      <td class="num">${money(d.listed_price)}</td>
+      <td class="num">${money(d.market_price)}<div class="hint">${esc(d.market_price_source || '')}</div></td>
+      <td class="num">${pct(d.discount_pct)}</td>
+      <td class="num" style="color:${d.est_profit_unit > 0 ? 'var(--good-text)' : 'var(--ink-2)'}">${money(d.est_profit_unit)}</td>
+      <td class="num"><b>${d.score ?? '—'}</b></td>
+      <td>${chip(d.decision || 'PENDING')}</td>
+      <td class="num">${d.target_qty || 0}</td>
+      <td>${chip(d.status || '', 'mute')}</td>
+      <td><a href="${esc(d.final_url || d.url)}" target="_blank" rel="noreferrer noopener" title="open at merchant">↗</a></td>
+    </tr>`).join('') || `<tr><td colspan="13" class="empty">Nothing yet.</td></tr>`;
+  }
+  if (tab === 'orders') {
+    const rows = await api('/orders');
+    $('#orders').innerHTML = rows.map(o => `<tr>
+      <td>${dt(o.placed_at || o.created_at)}</td><td>${esc(o.product_name || '')}</td>
+      <td>${esc(o.merchant || '')}</td><td class="mono">${esc(o.order_number || '—')}</td>
+      <td>${esc(o.card_label || '—')}</td><td class="num">${o.qty}</td><td class="num">${money(o.total)}</td>
+      <td>${esc(o.shipping_method || '—')}</td>
+      <td>${chip(o.ship_status || o.status)}${o.tracking_number ? `<div class="hint mono">${esc(o.carrier || '')} ${esc(o.tracking_number)}</div>` : ''}</td>
+      <td>${esc(o.eta || '—')}</td></tr>`).join('') || `<tr><td colspan="10" class="empty">No orders yet.</td></tr>`;
+  }
+  if (tab === 'failed') {
+    const rows = await api('/orders/failed');
+    $('#failed').innerHTML = rows.map(o => `<tr>
+      <td>${dt(o.created_at)}</td><td>${esc(o.product_name || o.deal_name || '')}</td>
+      <td>${esc(o.merchant || '')}</td><td>${chip(o.failure_stage || 'unknown', 'err')}</td>
+      <td style="color:var(--critical)">${esc(o.failure_reason || '')}</td>
+      <td class="num">${o.qty || 0}</td>
+      <td>${o.deal_id ? `<a href="/deal?id=${o.deal_id}">deal →</a>` : ''}</td></tr>`).join('')
+      || `<tr><td colspan="7" class="empty">No failed orders. </td></tr>`;
+  }
+  if (tab === 'log') {
+    const ev = await api('/events?limit=400');
+    $('#log').innerHTML = ev.map(e => `<div class="ln ${e.level}">
+      <span class="ts">${clock(e.ts)}</span><span class="stage">${esc(e.stage || '')}</span>
+      <span class="msg">${e.deal_id ? `<a href="/deal?id=${e.deal_id}" style="color:inherit">` : ''}${esc(e.message)}${e.deal_id ? '</a>' : ''}</span></div>`).join('');
+  }
+}
+$('#refresh').onclick = load; $('#q').oninput = () => { clearTimeout(window._t); window._t = setTimeout(load, 250); };
+$('#dec').onchange = load;
+load(); poll(load, 8000);
+</script></body></html>

@@ -1,0 +1,25 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deal Desk — sign in</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/styles.css">
+<style>
+ body{display:grid;place-items:center;min-height:100vh;background:var(--plane)}
+ .box{width:340px;background:var(--surface-1);border:1px solid var(--grid);border-radius:14px;padding:26px}
+ .lg{display:flex;align-items:center;gap:9px;margin-bottom:16px}
+ .lg .dot{width:10px;height:10px;border-radius:50%;background:var(--good)}
+ .err{color:var(--critical);font-size:12.5px;margin-top:9px;min-height:17px}
+</style></head><body>
+<form class="box" id="f">
+  <div class="lg"><span class="dot"></span><b>Deal Desk</b></div>
+  <div class="field"><label for="p">Password</label><input id="p" type="password" autofocus autocomplete="current-password"></div>
+  <button class="primary" style="width:100%" type="submit">Sign in</button>
+  <div class="err" id="e"></div>
+</form>
+<script src="/app.js"></script>
+<script>
+ document.documentElement.dataset.theme = localStorage.theme || '';
+ $('#f').onsubmit = async ev => {
+   ev.preventDefault(); $('#e').textContent = '';
+   try { await api('/login', {method:'POST', body:{password: $('#p').value}}); location.href='/'; }
+   catch (err) { $('#e').textContent = 'That password did not work.'; }
+ };
+</script></body></html>

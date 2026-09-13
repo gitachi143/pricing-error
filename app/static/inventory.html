@@ -1,0 +1,41 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deal Desk — Inventory</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/styles.css"></head><body>
+<main>
+  <header class="page"><div><h1>Inventory</h1>
+    <div class="sub">Everything bought: on its way, and already in your hands.</div></div></header>
+  <div class="grid tiles" id="tiles"></div>
+  <section class="card" style="margin-top:12px"><h2>Incoming</h2>
+    <div class="t-wrap"><table><thead><tr><th>Product</th><th>Merchant</th><th class="num">Qty</th>
+      <th class="num">Cost</th><th class="num">Market</th><th>Status</th><th>Tracking</th><th>ETA</th></tr></thead>
+      <tbody id="inc"></tbody></table></div></section>
+  <section class="card" style="margin-top:12px"><h2>Delivered</h2>
+    <div class="t-wrap"><table><thead><tr><th>Product</th><th>Merchant</th><th class="num">Qty</th>
+      <th class="num">Cost</th><th class="num">Market</th><th>Category</th><th>Size</th><th>Delivered</th></tr></thead>
+      <tbody id="del"></tbody></table></div></section>
+</main>
+<script src="/app.js"></script>
+<script>
+shell('/inventory');
+const tile = (l, v, f) => `<div class="card tile"><div class="label">${l}</div><div class="value">${v}</div><div class="foot">${f}</div></div>`;
+const row = o => `<tr><td><b>${esc(o.product_name || '—')}</b>${o.order_number ? `<div class="hint mono">${esc(o.order_number)}</div>` : ''}</td>
+  <td>${esc(o.merchant || '')}</td><td class="num">${o.qty}</td><td class="num">${money(o.total)}</td>
+  <td class="num">${money((o.market_price || 0) * (o.qty || 0))}</td>`;
+(async () => {
+  const inv = await api('/inventory');
+  const upside = (inv.market_delivered + inv.market_incoming) - (inv.cost_delivered + inv.cost_incoming);
+  $('#tiles').innerHTML = [
+    tile('Units incoming', num(inv.units_incoming), `${money0(inv.cost_incoming)} spent`),
+    tile('Units delivered', num(inv.units_delivered), `${money0(inv.cost_delivered)} spent`),
+    tile('Market value held', money0(inv.market_delivered + inv.market_incoming), 'at current comps'),
+    tile('Paper upside', money0(upside), 'market value minus what you paid'),
+  ].join('');
+  $('#inc').innerHTML = inv.incoming.map(o => row(o) +
+    `<td>${chip(o.ship_status || 'placed')}</td>
+     <td class="mono">${esc([o.carrier, o.tracking_number].filter(Boolean).join(' ') || '—')}</td>
+     <td>${esc(o.eta || '—')}</td></tr>`).join('') || `<tr><td colspan="8" class="empty">Nothing in transit.</td></tr>`;
+  $('#del').innerHTML = inv.delivered.map(o => row(o) +
+    `<td>${esc(o.category || '—')}</td><td>${esc(o.size || '—')}</td><td>${dt(o.delivered_at)}</td></tr>`).join('')
+    || `<tr><td colspan="8" class="empty">Nothing delivered yet.</td></tr>`;
+})();
+</script></body></html>
