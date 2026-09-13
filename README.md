@@ -6,12 +6,13 @@ pay for it — and the cart is already sitting one click from paid.
 
 ```
 python3 -m pip install -r requirements.txt
-python3 tools/seed_demo.py      # optional: realistic demo data
 ./run_local.sh                  # http://127.0.0.1:8080
 ```
 
-The password is in `.env` (`ADMIN_PASSWORD_HASH`); the plaintext was printed when it was generated.
-Regenerate any time with `python3 tools/mkpass.py`.
+The password is in `.env` (`ADMIN_PASSWORD_HASH`); regenerate any time with
+`python3 tools/mkpass.py`. It starts empty — the Overview page carries a setup checklist that walks
+you through cards, merchants, the ChatGPT tasks, and the worker, and ticks each item off as it
+detects it's actually done.
 
 ---
 
@@ -45,6 +46,7 @@ draws this; `app/core/pipeline.py` implements it.
 | Playbooks | `app/core/playbooks.py` | store/validate/version the recorded checkout steps |
 | Worker | `worker/run_worker.py` | drives the browser; runs on your machine, not the server |
 | Local vault | `worker/vault_server.py` | localhost-only editor for merchant logins and card numbers |
+| Mac installer | `worker/install_mac.sh` | one command: install, autostart, self-restart |
 
 ### The pages
 
@@ -61,6 +63,7 @@ draws this; `app/core/pipeline.py` implements it.
 | Checkout playbooks | coverage, versions, promote/roll back, paste one in by hand |
 | Link trust | paste any URL and see exactly why it passed or failed |
 | Settings | spend caps, tokens, copy-paste setup for the ChatGPT tasks |
+| **Set up your Mac** | the install command, worker status, and the everyday commands |
 
 ### The trust check is the important one
 
@@ -198,22 +201,59 @@ that runs the worker. See `worker/vault.example.json`.
 
 ## Running the worker
 
-```bash
-python3 -m pip install -r requirements-worker.txt
-python3 -m playwright install chromium
-cp worker/vault.example.json worker/vault.json && chmod 600 worker/vault.json   # then fill it in
+Open **Set up your Mac** in the dashboard and copy the one command it gives you:
 
-export DEALDESK_URL=http://127.0.0.1:8080     # or your Azure URL
-export WORKER_TOKEN=…                         # from .env
-python3 worker/run_worker.py
+```bash
+curl -fsSL "https://<your-app>.azurewebsites.net/api/worker/install.sh?t=<code>" | bash
 ```
 
-It starts in **dry run** — everything happens except the final click. `WORKER_DRY_RUN=0` to go live.
-There's also a master **Auto-buy** switch in the dashboard: off means carts get prepared and parked,
-and you press Buy yourself.
+That link is signed and expires in 30 minutes; it carries your server URL and worker token, so
+nothing has to be typed. The installer:
 
-Before paying, the worker re-reads the total on the review page and refuses if it's above the price
-the deal was approved at — so a fixed price error costs you nothing.
+1. installs to `~/Library/Application Support/DealDesk` — nothing outside that folder, no `sudo`
+2. builds its own Python environment and downloads a private Chromium (your Chrome is untouched)
+3. writes the config and an empty vault at `0600`
+4. registers a **launchd agent** — `RunAtLoad` so it starts when you log in, `KeepAlive` so macOS
+   restarts it if it ever dies
+5. starts it in **dry run**
+
+It's idempotent: run it again any time to upgrade or repair. Then:
+
+```bash
+dealdesk status          # running? plus the last 15 log lines
+dealdesk logs            # follow it live
+dealdesk vault           # enter cards and merchant logins (localhost only)
+dealdesk login <site>    # first sign-in to a merchant, by hand
+dealdesk live            # turn OFF dry run — it will start paying
+dealdesk uninstall       # stop it and remove the agent
+```
+
+**Two independent switches** have to be on before money moves: `dealdesk live` on your Mac, and
+Auto-buy in the dashboard. Before paying, the worker re-reads the total on the review page and
+refuses if it's above the price the deal was approved at — so a fixed price error costs you nothing.
+
+### When the connection drops
+
+The worker is built to be left alone:
+
+- **Server unreachable** (wifi drops, Azure restarts, laptop wakes) → exponential backoff up to 60s
+  with jitter, one log line rather than a flood, and a `reconnected after 45s offline` when it's
+  back. The reconnect count shows on the Setup page.
+- **A result can't be delivered** — which matters most when an order was already placed — it retries
+  three times, then spools the result to disk and flushes it on reconnect. A dropped connection
+  never loses the record of a purchase.
+- **Laptop slept** → on wake it notices the time jump and drops any parked carts rather than
+  resuming a stale checkout.
+- **Killed or crashed** → launchd restarts it within 10 seconds.
+- **Logged out / shut down** → SIGTERM is handled, browsers are closed cleanly, and the dashboard
+  gets a final `stopping` heartbeat so it shows *stopped* rather than *offline*.
+
+### Does the Mac need to stay on?
+
+Only for buying. The dashboard keeps vetting, researching and logging around the clock. With the Mac
+closed, deals still land in the Console — they just aren't purchased, and anything queued more than
+15 minutes is dropped rather than bought late. For real 24/7, a cheap Mac mini at home beats a cloud
+VM: the worker wants a residential connection.
 
 ## Feeding it from Discord
 
@@ -252,13 +292,15 @@ SQLite lives on `/home`, which Azure persists. Details, cost and the region-poli
 ## Tests
 
 ```bash
-python3 -m pytest tests/ -q      # 97 tests
+python3 -m pytest tests/ -q      # 113 tests
 ```
 
 Covering the spoof catalogue above, card allocation and roll-over, every buying filter, every
 shipping-policy branch, playbook validation for both schema versions, scheduled-task health,
-session tracking, the dry-run guarantee that the test bench queues nothing, and the full
-message-to-decision path including "checkout prep started before the page even came back".
+session tracking, the dry-run guarantee that the test bench queues nothing, the setup checklist,
+the signed install link (including that an expired one is refused and that the installer never
+hard-codes a secret), and the full message-to-decision path including "checkout prep started before
+the page even came back".
 
 ## One thing to know about running research in the cloud
 

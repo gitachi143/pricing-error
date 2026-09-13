@@ -1,0 +1,172 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Deal Desk — Set up</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/styles.css">
+<style>
+  .cmd { display:flex; gap:8px; align-items:stretch; margin-top:10px }
+  .cmd code { flex:1; background:var(--plane); border:1px solid var(--grid); border-radius:8px;
+              padding:12px 13px; font-size:12px; overflow:auto; white-space:nowrap; line-height:1.5 }
+  .big { font-size:15px; padding:11px 20px }
+  .steps { counter-reset:s; }
+  .steps > li { counter-increment:s; list-style:none; position:relative; padding-left:30px;
+                margin-bottom:9px; font-size:13px }
+  .steps > li::before { content:counter(s); position:absolute; left:0; top:1px; width:20px; height:20px;
+    border-radius:50%; background:color-mix(in srgb,var(--s1) 15%,transparent); color:var(--s1);
+    font-size:11px; font-weight:700; display:grid; place-items:center }
+  .stat { display:grid; grid-template-columns:auto 1fr; gap:5px 12px; font-size:13px }
+  .stat dt { color:var(--muted) } .stat dd { margin:0; font-variant-numeric:tabular-nums }
+</style></head><body>
+<main>
+  <header class="page">
+    <div><h1>Set up your Mac</h1><div class="sub">The dashboard does the thinking; your Mac does the
+      buying. One command installs it, keeps it running, and starts it again whenever you log in.</div></div>
+  </header>
+
+  <div class="split" style="grid-template-columns:1fr 360px">
+    <div class="stack">
+      <section class="card">
+        <h2>1 · Install the worker</h2>
+        <p class="hint">Open Terminal, paste this, press return. It's safe to run again any time —
+          it upgrades in place and never touches anything outside its own folder.</p>
+        <div class="cmd"><code id="cmd">…generating a link…</code>
+          <button class="primary big" id="copy">Copy</button></div>
+        <div class="hint" id="expiry" style="margin-top:6px"></div>
+        <details style="margin-top:12px"><summary class="hint" style="cursor:pointer">what it actually does</summary>
+          <ol class="steps" style="margin-top:9px;padding-left:0">
+            <li>Installs the worker to <code>~/Library/Application Support/DealDesk</code></li>
+            <li>Builds its own Python environment and downloads a private copy of Chromium
+              (it never touches your Chrome, your tabs, or your cookies)</li>
+            <li>Writes your server URL and worker token to a <code>0600</code> config file</li>
+            <li>Registers a <b>launchd agent</b>: starts at login, and restarts automatically
+              if it ever crashes or gets killed</li>
+            <li>Starts it — in dry run, so it does everything except the final payment click</li>
+          </ol>
+          <div class="hint">Nothing runs as root. Remove it completely with <code>dealdesk uninstall</code>.</div>
+        </details>
+      </section>
+
+      <section class="card">
+        <h2>2 · Add your card and login details</h2>
+        <p class="hint">These stay on your Mac. This server only ever learns the last 4 digits, the
+          limits you type into the Cards page, and whether a merchant session is alive.</p>
+        <div class="cmd"><code>dealdesk vault</code>
+          <button class="big" onclick="copyText('dealdesk vault')">Copy</button></div>
+        <div class="hint" style="margin-top:6px">Opens a local editor at
+          <a href="http://127.0.0.1:8765" target="_blank" rel="noreferrer">127.0.0.1:8765</a> —
+          bound to localhost, nothing on your network can reach it.</div>
+      </section>
+
+      <section class="card">
+        <h2>3 · Sign in to each merchant, once</h2>
+        <p class="hint">A browser opens, you sign in by hand (2FA and all), and the saved profile keeps
+          you signed in from then on. Only needed for merchants where checkout requires an account.</p>
+        <div class="cmd"><code id="loginCmd">dealdesk login bestbuy.com</code>
+          <button class="big" onclick="copyText($('#loginCmd').textContent)">Copy</button></div>
+        <div id="needLogin" class="hint" style="margin-top:8px"></div>
+      </section>
+
+      <section class="card">
+        <h2>4 · When you're ready to actually buy</h2>
+        <p class="hint">The worker installs in <b>dry run</b>: it adds to cart, fills everything in,
+          reaches the review page, and stops. Two separate switches have to be on before money moves —
+          this one on your Mac, and Auto-buy in the dashboard.</p>
+        <div class="cmd"><code>dealdesk live</code>
+          <button class="big" onclick="copyText('dealdesk live')">Copy</button></div>
+        <div class="row" style="margin-top:12px;align-items:center">
+          <label class="switch" style="flex:0 0 auto"><input type="checkbox" id="autoBuy">
+            <span>Auto-buy (this dashboard)</span></label>
+          <div class="hint" style="flex:1">Off means carts get prepared and parked, and you press
+            Buy on the deal yourself.</div></div>
+      </section>
+
+      <section class="card">
+        <h2>Everyday commands</h2>
+        <div class="t-wrap" style="max-height:none"><table><tbody>
+          <tr><td class="mono">dealdesk status</td><td>is it running, plus the last 15 log lines</td></tr>
+          <tr><td class="mono">dealdesk logs</td><td>follow the log live</td></tr>
+          <tr><td class="mono">dealdesk restart</td><td>restart it now</td></tr>
+          <tr><td class="mono">dealdesk vault</td><td>edit cards and merchant logins</td></tr>
+          <tr><td class="mono">dealdesk login &lt;site&gt;</td><td>sign in to a merchant by hand</td></tr>
+          <tr><td class="mono">dealdesk dry</td><td>back to dry run</td></tr>
+          <tr><td class="mono">dealdesk uninstall</td><td>stop it and remove the agent</td></tr>
+        </tbody></table></div>
+      </section>
+    </div>
+
+    <div class="stack">
+      <section class="card">
+        <h2>Worker status</h2>
+        <div id="status"><div class="hint">checking…</div></div>
+      </section>
+      <section class="card">
+        <h2>Does my Mac need to stay on?</h2>
+        <p class="hint" style="margin:0">Only for buying. The dashboard keeps vetting links,
+          researching and logging around the clock — if your Mac is closed, deals still appear in the
+          Console, they just aren't purchased. Anything queued for more than 15 minutes is dropped
+          rather than bought late.</p>
+        <p class="hint">To keep it awake while you're around: lid open, plugged in, and
+          <code>caffeinate -dimsu</code>. For real 24/7, a cheap Mac mini at home is the right
+          answer — the worker wants your home connection, not a datacenter's.</p>
+      </section>
+    </div>
+  </div>
+</main>
+<script src="/app.js"></script>
+<script>
+shell('/setup');
+
+function copyText(t) { navigator.clipboard.writeText(t); toast('Copied'); }
+
+async function makeLink() {
+  try {
+    const r = await api('/setup/link', { method: 'POST' });
+    $('#cmd').textContent = r.command;
+    $('#expiry').textContent = `This link carries your worker token and expires in ${r.expires_in_minutes} minutes — generate a fresh one if it stops working.`;
+    $('#copy').onclick = () => copyText(r.command);
+  } catch (e) { $('#cmd').textContent = 'could not generate a link: ' + e.message; }
+}
+
+async function loadStatus() {
+  const [w, me, sessions] = await Promise.all([
+    api('/worker/status'), api('/me'), api('/sessions')]);
+  $('#autoBuy').checked = me.auto_buy;
+  const hb = w.heartbeat || {};
+  const cls = w.state === 'online' ? 'ok' : w.state === 'never_connected' ? 'mute' : 'err';
+  const up = hb.uptime_seconds != null ? fmtUptime(hb.uptime_seconds) : '—';
+
+  $('#status').innerHTML = `
+    <div style="margin-bottom:10px">${chip(w.state.replace(/_/g, ' '), cls)}
+      ${hb.dry_run === false ? chip('LIVE', 'err') : hb.dry_run === true ? chip('dry run', 'warn') : ''}</div>
+    ${w.state === 'never_connected'
+      ? '<div class="hint">Run the install command and this will light up within a minute.</div>'
+      : `<dl class="stat">
+          <dt>machine</dt><dd>${esc(hb.worker_id || '—')}</dd>
+          <dt>version</dt><dd>${esc(hb.version || '—')}</dd>
+          <dt>last seen</dt><dd>${w.seconds_since_seen != null ? w.seconds_since_seen + 's ago' : '—'}</dd>
+          <dt>uptime</dt><dd>${up}</dd>
+          <dt>browser</dt><dd>${hb.browser_ok === false ? '<span style="color:var(--critical)">failed to launch</span>'
+            : hb.browser_ok ? 'ok' : 'not used yet'}</dd>
+          <dt>jobs 24h</dt><dd>${w.jobs_24h} · ${w.failed_24h} failed · ${w.expired_24h} expired</dd>
+          <dt>waiting</dt><dd>${w.waiting}</dd>
+          <dt>reconnects</dt><dd>${hb.reconnects ?? 0}</dd>
+          <dt>last job</dt><dd>${esc(hb.last_job || '—')}</dd>
+          <dt>os</dt><dd>${esc(hb.os || '—')}</dd>
+        </dl>
+        ${hb.last_error ? `<div class="hint" style="color:var(--critical);margin-top:8px">last error: ${esc(hb.last_error)}</div>` : ''}
+        ${w.state === 'offline' ? `<div class="hint" style="margin-top:8px">It should come back by itself —
+          launchd restarts it. If it doesn't, run <code>dealdesk status</code>.</div>` : ''}`}`;
+
+  const need = sessions.filter(s => s.login_required && s.status !== 'signed_in');
+  $('#needLogin').innerHTML = need.length
+    ? `Needs a sign-in: ${need.map(s => `<code>${esc(s.domain)}</code>`).join(' ')}`
+    : 'No merchant is waiting on a sign-in.';
+  if (need.length) $('#loginCmd').textContent = `dealdesk login ${need[0].domain}`;
+}
+const fmtUptime = s => s < 3600 ? Math.round(s / 60) + 'm'
+  : s < 86400 ? (s / 3600).toFixed(1) + 'h' : (s / 86400).toFixed(1) + 'd';
+
+$('#autoBuy').onchange = async e => {
+  await api('/settings', { method: 'PUT', body: { auto_buy: e.target.checked } });
+  toast(e.target.checked ? 'Auto-buy ON' : 'Auto-buy off');
+};
+makeLink(); loadStatus(); poll(loadStatus, 10000);
+</script></body></html>

@@ -42,15 +42,18 @@ class LoginIn(BaseModel):
 
 
 @app.post("/api/login")
-def login(body: LoginIn, response: Response):
+def login(body: LoginIn, request: Request, response: Response):
     time.sleep(0.25)  # crude throttle on guessing
     if not security.verify_password(body.password):
         events.log(None, "auth", "failed login attempt", level="warn")
         raise HTTPException(401, "wrong password")
     token = security.make_session()
+    # Secure only over https — Azure is https, local dev and tests are not, and a
+    # Secure cookie is silently dropped on http.
+    https = (request.url.scheme == "https"
+             or request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https")
     response.set_cookie(security.COOKIE, token, httponly=True, samesite="lax",
-                        secure=not config.DB_PATH.startswith(str(config.ROOT)),
-                        max_age=config.SESSION_HOURS * 3600)
+                        secure=https, max_age=config.SESSION_HOURS * 3600)
     events.log(None, "auth", "signed in")
     return {"ok": True}
 
@@ -86,7 +89,7 @@ PAGES = {"": "index.html", "console": "console.html", "deals": "console.html",
          "deal": "deal.html", "inventory": "inventory.html", "cards": "cards.html",
          "filters": "filters.html", "playbooks": "playbooks.html", "trust": "trust.html",
          "settings": "settings.html", "testbench": "testbench.html", "tasks": "tasks.html",
-         "merchants": "merchants.html"}
+         "merchants": "merchants.html", "setup": "setup.html"}
 
 
 @app.get("/login")

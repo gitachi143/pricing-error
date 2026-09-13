@@ -11,6 +11,16 @@
     </div>
   </header>
 
+  <section class="card" id="setupCard" hidden style="margin-bottom:12px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <div><h2 style="margin:0">Finish setting up</h2>
+        <div class="hint" id="setupCount"></div></div>
+      <div class="meter" style="flex:1 1 200px;max-width:320px;margin:0"><i id="setupBar"></i></div>
+    </div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(270px,1fr));margin-top:12px"
+         id="setupSteps"></div>
+  </section>
+
   <div class="grid tiles" id="tiles"></div>
 
   <div class="split" style="margin-top:12px">
@@ -41,14 +51,6 @@
   </div>
 </main>
 
-<dialog id="testDlg">
-  <h2>Run a message through the pipeline</h2>
-  <div class="field"><label>Paste a Discord message or a bare link</label>
-    <textarea id="testMsg" placeholder="🔥 PRICE ERROR https://www.target.com/p/…  $39 (was $399)"></textarea></div>
-  <div class="row"><button class="primary" id="runTest">Run it</button>
-    <button id="closeTest" class="ghost">Close</button></div>
-  <div id="testOut" style="margin-top:12px"></div>
-</dialog>
 
 <script src="/app.js"></script>
 <script>
@@ -58,25 +60,30 @@ fetch('/diagram.svg').then(r => r.text()).then(s => $('#diagram').innerHTML = s)
 const DEC = { BUY: 'var(--s1)', HOLD: 'var(--s4)', SKIP: 'var(--muted)', BLOCKED: 'var(--critical)' };
 
 async function load() {
-  const s = await api('/stats');
+  const [s, setup] = await Promise.all([api('/stats'), api('/setup/status')]);
+  renderSetup(setup);
   $('#autoBuy').checked = s.auto_buy;
   const capPct = s.daily_cap ? Math.min(100, 100 * s.spend_24h / s.daily_cap) : 0;
   const buy = s.by_decision_7d.BUY || 0, all = Object.values(s.by_decision_7d).reduce((a, b) => a + b, 0);
 
   $('#tiles').innerHTML = [
-    tile('Links seen · 24h', num(s.deals_24h), `${num(s.deals_7d)} in the last 7 days`),
+    tile('Links seen · 24h', num(s.deals_24h),
+         s.deals_7d ? `${num(s.deals_7d)} in the last 7 days` : 'nothing has come in yet'),
     tile('Decided to buy · 7d', num(buy), all ? `${Math.round(100 * buy / all)}% of everything posted` : 'nothing yet'),
     tile('Spent today', money0(s.spend_24h),
          `of ${money0(s.daily_cap)} cap<div class="meter"><i style="width:${capPct}%;background:${capPct > 85 ? 'var(--critical)' : 'var(--s1)'}"></i></div>`),
-    tile('Credit available', money0(s.credit_available), `of ${money0(s.credit_total)} across your cards`),
+    tile('Credit available', s.credit_total ? money0(s.credit_available) : '—',
+         s.credit_total ? `of ${money0(s.credit_total)} across your cards`
+                        : '<a href="/cards">add a card →</a>'),
     tile('Orders in flight', num(s.orders_open), `${num(s.orders_failed_24h)} failed in 24h`),
-    tile('Decision latency', Math.round(s.median_latency_ms) + ' ms', 'link → buy/skip call'),
+    tile('Decision latency', s.deals_24h ? Math.round(s.median_latency_ms) + ' ms' : '—',
+         'link → buy/skip call'),
   ].join('');
 
   $('#decisionBars').innerHTML = Object.keys(DEC).map(k => {
     const v = s.by_decision_7d[k] || 0, w = all ? Math.max(v ? 3 : 0, 100 * v / all) : 0;
     return `<div class="b"><span>${k}</span><span class="track"><i style="width:${w}%;background:${DEC[k]}"></i></span><span class="n">${v}</span></div>`;
-  }).join('') + (all ? '' : '<div class="hint">No deals yet — use “Test a link”.</div>');
+  }).join('') + (all ? '' : '<div class="hint">No deals yet — try the <a href="/testbench">test bench</a>.</div>');
 
   const pb = s.playbooks || [];
   const byHealth = h => pb.filter(p => p.health === h).length;
@@ -87,15 +94,37 @@ async function load() {
     ${pb.filter(p => p.health !== 'fresh').slice(0, 6).map(p =>
       `<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:12.5px">
         <span>${esc(p.domain)}</span>${chip(p.health, p.health)}</div>`).join('')
-      || '<div class="hint">Every merchant has a fresh playbook.</div>'}
+      || (pb.length ? '<div class="hint">Every merchant has a fresh playbook.</div>'
+                    : '<div class="hint">No merchants configured yet.</div>')}
     <div style="margin-top:9px"><a href="/playbooks">Open playbooks →</a></div>`;
 
   const ev = await api('/events?limit=40');
   $('#feed').innerHTML = ev.map(e => `<div class="ln ${e.level}"><span class="ts">${clock(e.ts)}</span>
-    <span class="stage">${esc(e.stage || '')}</span><span class="msg">${esc(e.message)}</span></div>`).join('');
+    <span class="stage">${esc(e.stage || '')}</span><span class="msg">${esc(e.message)}</span></div>`).join('')
+    || '<div class="empty">Nothing has happened yet.</div>';
   $('#sub').innerHTML = `${s.auto_buy ? '<b style="color:var(--good-text)">Auto-buy is ON</b>' :
     'Auto-buy is off — carts are prepared, you press the button'} · inventory at cost ${money0(s.inventory_value)}`;
 }
+function renderSetup(su) {
+  const card = $('#setupCard');
+  card.hidden = su.complete;
+  if (su.complete) return;
+  $('#setupCount').textContent = `${su.done} of ${su.total} done`;
+  $('#setupBar').style.width = `${100 * su.done / su.total}%`;
+  $('#setupBar').style.background = su.done === su.total ? 'var(--good)' : 'var(--s1)';
+  $('#setupSteps').innerHTML = su.steps.map(st => `
+    <div style="display:flex;gap:9px;align-items:flex-start;padding:8px 10px;border-radius:9px;
+         border:1px solid ${st.done ? 'transparent' : 'var(--grid)'};
+         background:${st.done ? 'color-mix(in srgb,var(--good) 8%,transparent)' : 'transparent'}">
+      <span style="flex:0 0 18px;font-weight:700;color:${st.done ? 'var(--good-text)' : 'var(--muted)'}">
+        ${st.done ? '✓' : '○'}</span>
+      <div style="flex:1">
+        <div style="font-size:13px;font-weight:600">${esc(st.title)}</div>
+        <div class="hint">${esc(st.detail)}</div>
+        ${st.done ? '' : `<a href="${st.href}" style="font-size:12px">${esc(st.cta)} →</a>`}
+      </div></div>`).join('');
+}
+
 const tile = (label, value, foot) =>
   `<div class="card tile"><div class="label">${label}</div><div class="value">${value}</div><div class="foot">${foot}</div></div>`;
 
@@ -103,21 +132,6 @@ $('#autoBuy').onchange = async e => {
   await api('/settings', { method: 'PUT', body: { auto_buy: e.target.checked } });
   toast(e.target.checked ? 'Auto-buy ON — the bot will pay' : 'Auto-buy off');
   load();
-};
-$('#closeTest').onclick = () => $('#testDlg').close();
-$('#runTest').onclick = async () => {
-  const btn = $('#runTest'); btn.disabled = true; btn.textContent = 'Running…';
-  try {
-    const r = await api('/ingest/message', { method: 'POST', body: { message: $('#testMsg').value, source: 'manual' } });
-    $('#testOut').innerHTML = r.deals.length ? r.deals.map(d => `
-      <div class="card" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;gap:10px">
-        <b>${esc(d.product || '(no name)')}</b>${chip(d.decision)}</div>
-        <div class="hint">${esc(d.merchant || '')} · score ${d.score ?? '—'} · qty ${d.qty ?? 0}
-        · <a href="/deal?id=${d.id}">open →</a></div></div>`).join('')
-      : '<div class="hint">No links found in that message.</div>';
-    load();
-  } catch (e) { $('#testOut').innerHTML = `<div class="hint" style="color:var(--critical)">${esc(e.message)}</div>`; }
-  btn.disabled = false; btn.textContent = 'Run it';
 };
 load(); poll(load, 12000);
 </script></body></html>

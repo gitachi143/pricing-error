@@ -65,6 +65,7 @@ const NAV = [
   ['/playbooks', '⟳', 'Checkout playbooks'],
   ['/trust', '⛊', 'Link trust'],
   ['/settings', '⚙', 'Settings'],
+  ['/setup', '⌁', 'Set up your Mac'],
 ];
 
 function shell(active) {

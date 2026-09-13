@@ -4,6 +4,11 @@ os.environ["DB_PATH"] = os.path.join(tempfile.mkdtemp(), "test.db")
 os.environ["ALLOW_NETWORK"] = "0"
 os.environ["SESSION_SECRET"] = "test-secret"
 os.environ["ADMIN_PASSWORD"] = "test-pw"
+# Tests must not depend on the developer's .env — blank the hash so the plaintext
+# test password is the one that works.
+os.environ["ADMIN_PASSWORD_HASH"] = ""
+os.environ["INGEST_TOKEN"] = "test-ingest-token"
+os.environ["WORKER_TOKEN"] = "test-worker-token"
 
 import pytest
 from app import db

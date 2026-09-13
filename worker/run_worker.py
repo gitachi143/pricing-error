@@ -31,17 +31,38 @@ from __future__ import annotations
 
 import json
 import os
+import platform
+import random
+import signal
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+
+def _load_config():
+    """Read the config file launchd points us at, so the agent doesn't depend on
+    a shell profile being loaded."""
+    path = os.environ.get("DEALDESK_CONFIG") or str(Path(__file__).resolve().parent / "config.env")
+    if not Path(path).exists():
+        return
+    for line in Path(path).read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+_load_config()
+
 import httpx
 from executor import (RunLog, StepError, check_failure_signals, check_session,
                       locate, money_on_page, run_steps)
 from vault import card_for, context_for, has_credentials, load as load_vault
 
+VERSION = "1.2"
 BASE = os.environ.get("DEALDESK_URL", "http://127.0.0.1:8080").rstrip("/")
 TOKEN = os.environ.get("WORKER_TOKEN", "")
 WORKER_ID = os.environ.get("WORKER_ID", os.uname().nodename)
@@ -55,19 +76,114 @@ HTTP = httpx.Client(base_url=BASE, headers={"Authorization": f"Bearer {TOKEN}"},
 PARKED: dict[int, dict] = {}       # deal_id -> {"context":…, "page":…, "at":…}
 FLOWS_TO_REVIEW = ["add_to_cart", "open_cart", "checkout_start", "shipping", "payment", "review"]
 
+STATS = {"started_at": time.time(), "jobs_done": 0, "jobs_failed": 0, "orders_placed": 0,
+         "last_job_at": None, "last_job": "", "last_error": "", "reconnects": 0,
+         "browser_ok": None}
+RUNNING = True
+
 
 def log(msg: str):
-    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
+
+
+def _shutdown(signum, _frame):
+    """launchd sends SIGTERM on logout/restart. Finish cleanly so a half-done
+    checkout isn't left holding a browser."""
+    global RUNNING
+    RUNNING = False
+    log(f"signal {signum} — shutting down")
+
+
+signal.signal(signal.SIGTERM, _shutdown)
+signal.signal(signal.SIGINT, _shutdown)
+
+
+def heartbeat(stopping: bool = False):
+    """Tell the dashboard everything it needs to show a real status page."""
+    HTTP.post("/api/worker/heartbeat", json={
+        "worker_id": WORKER_ID,
+        "version": VERSION,
+        "state": "stopping" if stopping else "running",
+        "dry_run": DRY_RUN,
+        "headless": HEADLESS,
+        "uptime_seconds": int(time.time() - STATS["started_at"]),
+        "jobs_done": STATS["jobs_done"],
+        "jobs_failed": STATS["jobs_failed"],
+        "orders_placed": STATS["orders_placed"],
+        "last_job": STATS["last_job"],
+        "last_job_at": STATS["last_job_at"],
+        "last_error": STATS["last_error"],
+        "reconnects": STATS["reconnects"],
+        "browser_ok": STATS["browser_ok"],
+        "parked_carts": len(PARKED),
+        "host": platform.node(),
+        "os": f"{platform.system()} {platform.mac_ver()[0] or platform.release()}",
+        "python": platform.python_version(),
+        "profile": str(PROFILE_DIR),
+    })
 
 
 def report(job_id: int, state: str, stage: str, message: str, **extra):
+    if state == "done":
+        STATS["jobs_done"] += 1
+        STATS["orders_placed"] += len([c for c in extra.get("charges", [])
+                                       if c.get("order_number") not in (None, "", "DRYRUN")])
+    else:
+        STATS["jobs_failed"] += 1
+        STATS["last_error"] = f"{stage}: {message}"[:200]
+    for attempt in range(3):
+        try:
+            HTTP.post(f"/api/worker/jobs/{job_id}/result",
+                      json={"state": state, "stage": stage, "message": message,
+                            "order_number": extra.pop("order_number", None),
+                            "charges": extra.pop("charges", []), "data": extra})
+            return
+        except Exception as e:
+            # An order may already be placed — this result must not be lost to a
+            # dropped connection.
+            if attempt == 2:
+                log(f"could not report job {job_id} after 3 tries: {e}")
+                _spool(job_id, state, stage, message, extra)
+            else:
+                time.sleep(2 * (attempt + 1))
+
+
+def _spool(job_id, state, stage, message, extra):
+    """Last resort: write the result next to the worker so it isn't lost."""
     try:
-        HTTP.post(f"/api/worker/jobs/{job_id}/result",
-                  json={"state": state, "stage": stage, "message": message,
-                        "order_number": extra.pop("order_number", None),
-                        "charges": extra.pop("charges", []), "data": extra})
-    except Exception as e:
-        log(f"could not report job {job_id}: {e}")
+        path = PROFILE_DIR.parent / "unreported_results.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a") as fh:
+            fh.write(json.dumps({"ts": time.time(), "job_id": job_id, "state": state,
+                                 "stage": stage, "message": message, "data": extra}) + "\n")
+        log(f"result for job {job_id} written to {path}")
+    except Exception:
+        pass
+
+
+def flush_spool():
+    """Send anything that was written while the server was unreachable."""
+    path = PROFILE_DIR.parent / "unreported_results.jsonl"
+    if not path.exists():
+        return
+    try:
+        lines = [l for l in path.read_text().splitlines() if l.strip()]
+        kept = []
+        for line in lines:
+            try:
+                r = json.loads(line)
+                HTTP.post(f"/api/worker/jobs/{r['job_id']}/result",
+                          json={"state": r["state"], "stage": r["stage"],
+                                "message": r["message"], "data": r.get("data", {})})
+            except Exception:
+                kept.append(line)
+        if kept:
+            path.write_text("\n".join(kept) + "\n")
+        else:
+            path.unlink()
+            log("flushed queued job results to the server")
+    except Exception:
+        pass
 
 
 def report_session(merchant: str, signed_in: bool, has_creds: bool,
@@ -82,12 +198,18 @@ def report_session(merchant: str, signed_in: bool, has_creds: bool,
 
 def new_page(pw):
     """One persistent browser profile keeps you logged in between runs."""
-    ctx = pw.chromium.launch_persistent_context(
-        user_data_dir=str(PROFILE_DIR), headless=HEADLESS,
-        viewport={"width": 1440, "height": 900})
-    page = ctx.pages[0] if ctx.pages else ctx.new_page()
-    page.set_default_timeout(12000)
-    return ctx, page
+    try:
+        ctx = pw.chromium.launch_persistent_context(
+            user_data_dir=str(PROFILE_DIR), headless=HEADLESS,
+            viewport={"width": 1440, "height": 900})
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        page.set_default_timeout(12000)
+        STATS["browser_ok"] = True
+        return ctx, page
+    except Exception as e:
+        STATS["browser_ok"] = False
+        STATS["last_error"] = f"browser failed to launch: {type(e).__name__}"
+        raise
 
 
 # --------------------------------------------------------------------------
@@ -383,33 +505,64 @@ def main():
         return
 
     if not TOKEN:
-        raise SystemExit("Set WORKER_TOKEN (it's in the server's .env).")
+        raise SystemExit("Set WORKER_TOKEN (it's in the server's .env, or config.env here).")
     vault = load_vault()
     from playwright.sync_api import sync_playwright
-    log(f"worker {WORKER_ID} → {BASE}  "
-        f"({'DRY RUN' if DRY_RUN else 'LIVE — will spend money'}, "
-        f"{'headless' if HEADLESS else 'visible browser'})")
-    log(f"profile: {PROFILE_DIR}  ·  sign-ins persist here")
+    log(f"worker {WORKER_ID} v{VERSION} → {BASE}")
+    log(f"  {'DRY RUN — nothing will be paid for' if DRY_RUN else 'LIVE — this will spend money'}"
+        f" · {'headless' if HEADLESS else 'visible browser'}")
+    log(f"  profile: {PROFILE_DIR} (sign-ins persist here)")
+
+    try:
+        flush_spool()
+    except Exception:
+        pass
+
     last_beat = 0.0
     last_sweep = 0.0
+    last_tick = time.time()
+    backoff = 0.0
+    offline_since = None
+
     with sync_playwright() as pw:
-        while True:
+        while RUNNING:
             try:
-                if time.time() - last_beat > 30:
-                    HTTP.post("/api/worker/heartbeat",
-                              params={"worker_id": WORKER_ID, "version": "1.1"})
-                    last_beat = time.time()
-                if time.time() - last_sweep > SESSION_SWEEP_MINUTES * 60:
-                    last_sweep = time.time()
+                # Laptop slept and woke: drop any parked carts, they're stale.
+                now = time.time()
+                if now - last_tick > 180 and PARKED:
+                    log(f"woke after {int(now - last_tick)}s asleep — dropping "
+                        f"{len(PARKED)} parked cart(s)")
+                    for st in list(PARKED.values()):
+                        _close(st.get("context"))
+                    PARKED.clear()
+                last_tick = now
+
+                if now - last_beat > 30 or offline_since:
+                    heartbeat()              # raises while the server is still down
+                    last_beat = now
+                    if offline_since:
+                        STATS["reconnects"] += 1
+                        log(f"reconnected after {int(now - offline_since)}s offline")
+                        offline_since = None
+                        flush_spool()
+                        heartbeat()          # resend so the count is current straight away
+                    backoff = 0.0
+
+                if now - last_sweep > SESSION_SWEEP_MINUTES * 60:
+                    last_sweep = now
                     sweep_sessions(pw, vault)
+
                 r = HTTP.get("/api/worker/next", params={"worker_id": WORKER_ID}).json()
                 job = r.get("job")
                 if not job:
                     time.sleep(POLL_SECONDS)
                     continue
+
                 deal, playbook = r.get("deal"), r.get("playbook")
                 log(f"job {job['id']} · {job['kind']} · deal {job.get('deal_id')} "
                     f"· {(deal or {}).get('merchant', '?')}")
+                STATS["last_job_at"] = time.time()
+                STATS["last_job"] = f"{job['kind']} · {(deal or {}).get('merchant', '?')}"
                 if not playbook:
                     report(job["id"], "failed", "playbook",
                            "no live playbook for this merchant")
@@ -420,12 +573,42 @@ def main():
                     handle_place(pw, job, deal, playbook, vault)
                 else:
                     report(job["id"], "done", "", f"ignored job kind {job['kind']}")
+
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout,
+                    httpx.RemoteProtocolError, httpx.PoolTimeout) as e:
+                # The server is unreachable — wifi dropped, Azure is restarting,
+                # the laptop just woke up. Back off, keep trying, say so once.
+                if offline_since is None:
+                    offline_since = time.time()
+                    log(f"server unreachable ({type(e).__name__}) — retrying with backoff")
+                STATS["last_error"] = f"{type(e).__name__}"
+                backoff = min(60.0, (backoff or 1.0) * 1.8)
+                time.sleep(backoff + random.uniform(0, backoff * 0.25))
+
+            except httpx.HTTPStatusError as e:
+                code = e.response.status_code if e.response is not None else 0
+                if code == 401:
+                    log("401 from the server — WORKER_TOKEN is wrong. Re-run the installer "
+                        "with a fresh link from the Setup page.")
+                    time.sleep(60)
+                else:
+                    log(f"server said {code}; retrying shortly")
+                    time.sleep(10)
+
             except KeyboardInterrupt:
-                log("bye")
-                return
+                break
             except Exception as e:
+                STATS["last_error"] = f"{type(e).__name__}: {e}"
                 log(f"loop error: {type(e).__name__}: {e}")
-                time.sleep(3)
+                time.sleep(5)
+
+    for st in list(PARKED.values()):
+        _close(st.get("context"))
+    try:
+        heartbeat(stopping=True)
+    except Exception:
+        pass
+    log("stopped")
 
 
 if __name__ == "__main__":

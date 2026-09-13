@@ -71,6 +71,18 @@ def read_session(token: str | None) -> dict | None:
         return None
 
 
+# --- one-time setup links ------------------------------------------------
+def make_setup_token(minutes: int = 30) -> str:
+    """Short-lived token so `curl <url>/api/worker/install.sh?t=…| bash` can fetch
+    an installer with the worker token baked in, without a browser session."""
+    return _sign(json.dumps({"k": "setup", "exp": time.time() + minutes * 60}).encode())
+
+
+def valid_setup_token(token: str | None) -> bool:
+    data = read_session(token)
+    return bool(data and data.get("k") == "setup")
+
+
 # --- FastAPI dependencies ------------------------------------------------
 def require_user(request: Request) -> dict:
     sess = read_session(request.cookies.get(COOKIE))
